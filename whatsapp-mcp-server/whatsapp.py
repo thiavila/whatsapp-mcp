@@ -1,7 +1,7 @@
 import sqlite3
 from datetime import datetime
 from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Any
 import os.path
 import requests
 import json
@@ -765,3 +765,55 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
         return None
+
+
+def get_unread_messages(limit: int = 10) -> List[Dict[str, Any]]:
+    """Get chats with unread messages, most recent first.
+
+    Returns chats where unread_count != 0 — that catches both real positive
+    counts (synced from the phone) and the -1 sentinel set by MarkChatAsUnread
+    on the bridge side. Includes the last message preview so the caller can
+    decide whether each is worth opening.
+    """
+    try:
+        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                chats.jid,
+                chats.name,
+                chats.last_message_time,
+                chats.unread_count,
+                messages.content AS last_message,
+                messages.sender  AS last_sender,
+                messages.is_from_me AS last_is_from_me
+            FROM chats
+            LEFT JOIN messages
+              ON chats.jid = messages.chat_jid
+             AND chats.last_message_time = messages.timestamp
+            WHERE chats.unread_count != 0
+            ORDER BY chats.last_message_time DESC
+            LIMIT ?
+        """, (limit,))
+
+        result: List[Dict[str, Any]] = []
+        for row in cursor.fetchall():
+            jid, name, last_time, unread_count, last_msg, last_sender, last_is_from_me = row
+            result.append({
+                "jid": jid,
+                "name": name,
+                "last_message_time": last_time,
+                "unread_count": unread_count,
+                "unread_count_unknown": unread_count == -1,
+                "last_message": last_msg,
+                "last_sender": last_sender,
+                "last_is_from_me": bool(last_is_from_me) if last_is_from_me is not None else None,
+            })
+        return result
+
+    except sqlite3.Error as e:
+        print(f"Database error: {e}")
+        return []
+    finally:
+        if 'conn' in locals():
+            conn.close()
