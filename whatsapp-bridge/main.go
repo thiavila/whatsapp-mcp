@@ -51,7 +51,9 @@ type MessageStore struct {
 type Chat struct {
 	JID             string
 	LastMessageTime time.Time
-	UnreadCount     uint32
+	// UnreadCount is signed because WhatsApp Web uses -1 as a sentinel
+	// for "marked unread by user, count unknown".
+	UnreadCount int32
 }
 
 // Initialize message store
@@ -109,7 +111,7 @@ func (store *MessageStore) Close() error {
 }
 
 // Store a chat in the database
-func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time, unreadCount uint32) error {
+func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time, unreadCount int32) error {
 	_, err := store.db.Exec(
 		"INSERT OR REPLACE INTO chats (jid, name, last_message_time, unread_count) VALUES (?, ?, ?, ?)",
 		jid, name, lastMessageTime, unreadCount,
@@ -184,8 +186,8 @@ func (store *MessageStore) GetChats() ([]Chat, error) {
 }
 
 // Get unread count for a chat
-func (store *MessageStore) GetUnreadCount(chatJID string) (uint32, error) {
-	var unreadCount uint32
+func (store *MessageStore) GetUnreadCount(chatJID string) (int32, error) {
+	var unreadCount int32
 	err := store.db.QueryRow("SELECT unread_count FROM chats WHERE jid = ?", chatJID).Scan(&unreadCount)
 	if err != nil {
 		return 0, err
@@ -202,8 +204,10 @@ func (store *MessageStore) MarkChatAsRead(chatJID string) error {
 
 // Mark chat as unread
 func (store *MessageStore) MarkChatAsUnread(chatJID string) error {
-	// Set unread count to 1 to indicate unread status
-	_, err := store.db.Exec("UPDATE chats SET unread_count = 1 WHERE jid = ?", chatJID)
+	// Use -1 as a sentinel for "user marked unread, real count unknown"
+	// — matches the convention used by WhatsApp Web. Real counts (from the
+	// receipt/history sync paths) overwrite this with the actual value.
+	_, err := store.db.Exec("UPDATE chats SET unread_count = -1 WHERE jid = ?", chatJID)
 	fmt.Printf("MarkChatAsUnread: Marking chat %s as unread\n", chatJID)
 	return err
 }
@@ -454,7 +458,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	name := GetChatName(client, messageStore, msg.Info.Chat, chatJID, nil, sender, logger)
 
 	// Determine unread count
-	var unreadCount uint32 = 0
+	var unreadCount int32 = 0
 	if !msg.Info.IsFromMe {
 		// If message is not from me, increment unread count
 		currUnread, err := messageStore.GetUnreadCount(chatJID)
@@ -1218,10 +1222,11 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 				continue
 			}
 
-			// Extract unread count if available
-			var unreadCount uint32 = 0
+			// Extract unread count if available (whatsmeow exposes *uint32;
+			// cast to int32 since our column is signed for the -1 sentinel)
+			var unreadCount int32 = 0
 			if conversation.UnreadCount != nil {
-				unreadCount = *conversation.UnreadCount
+				unreadCount = int32(*conversation.UnreadCount)
 				logger.Infof("Chat %s has %d unread messages", chatJID, unreadCount)
 			}
 
