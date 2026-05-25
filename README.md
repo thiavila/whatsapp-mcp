@@ -1,4 +1,17 @@
-# WhatsApp MCP Server
+# WhatsApp MCP Server (thiavila fork)
+
+> **Fork of [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp).** The original repo hasn't had a release since July 2025 and the whatsmeow library it pins is now rejected by WhatsApp servers (HTTP 405 "Client outdated"). This fork keeps it usable and adds unread tracking on top.
+>
+> **What's different from upstream:**
+> 1. **Bumped `whatsmeow` to the May 2026 snapshot** — upstream is stuck on a March 2025 lib that no longer connects. Adds `context.Background()` at five call sites so the new API compiles.
+> 2. **REST API bound to `127.0.0.1:8080` only** — upstream binds to `*:8080`, which exposes `/api/send` to anyone on the same LAN.
+> 3. **Raw QR string emitted alongside the ASCII art** — between `[QR_RAW]…[/QR_RAW]` markers. Lets tooling render the QR as a PNG when the bridge runs headless (launchd, docker, systemd).
+> 4. **Unread tracking via [PR #59](https://github.com/lharries/whatsapp-mcp/pull/59) by [@maxprokopp](https://github.com/maxprokopp)** — `unread_count` on chats, real-time receipt + history sync from the phone, new `list_unread_chats` MCP tool, REST endpoints `GET /api/chats` and `POST /api/mark-read`.
+> 5. **`unread_count` switched to `int32` with `-1` sentinel** for "marked unread, count unknown" (matches WhatsApp Web convention — feedback from [@RodolfoCastanheira](https://github.com/RodolfoCastanheira) on the upstream PR).
+>
+> **Setup is otherwise identical to upstream** — see instructions below. Everything in this fork stays compatible with the original Claude Desktop / Cursor config.
+
+---
 
 This is a Model Context Protocol (MCP) server for WhatsApp.
 
