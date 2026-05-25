@@ -102,7 +102,62 @@ func NewMessageStore() (*MessageStore, error) {
 		return nil, fmt.Errorf("failed to create tables: %v", err)
 	}
 
+	// Lightweight migration: ALTER TABLE ADD COLUMN is a no-op when the
+	// column already exists, but SQLite errors out instead of being silent.
+	// Probe with PRAGMA table_info and only ALTER when missing, so DBs
+	// created against the pre-unread schema upgrade cleanly on first run.
+	if err := migrateUnreadColumns(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate schema: %v", err)
+	}
+
 	return &MessageStore{db: db}, nil
+}
+
+// migrateUnreadColumns adds chats.unread_count and messages.is_read to
+// databases that pre-date the unread-tracking feature.
+func migrateUnreadColumns(db *sql.DB) error {
+	hasColumn := func(table, column string) (bool, error) {
+		rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+		if err != nil {
+			return false, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, pk int
+			var dflt sql.NullString
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+				return false, err
+			}
+			if name == column {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+
+	has, err := hasColumn("chats", "unread_count")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := db.Exec("ALTER TABLE chats ADD COLUMN unread_count INTEGER DEFAULT 0"); err != nil {
+			return fmt.Errorf("add chats.unread_count: %v", err)
+		}
+	}
+
+	has, err = hasColumn("messages", "is_read")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN is_read BOOLEAN DEFAULT FALSE"); err != nil {
+			return fmt.Errorf("add messages.is_read: %v", err)
+		}
+	}
+	return nil
 }
 
 // Close the database connection
