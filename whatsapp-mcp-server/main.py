@@ -28,6 +28,30 @@ from whatsapp import (
     create_poll as whatsapp_create_poll,
     check_phones_on_whatsapp as whatsapp_check_phones_on_whatsapp,
     set_disappearing_timer as whatsapp_set_disappearing_timer,
+    create_group as whatsapp_create_group,
+    leave_group as whatsapp_leave_group,
+    get_group_info as whatsapp_get_group_info,
+    list_joined_groups as whatsapp_list_joined_groups,
+    get_group_invite_link as whatsapp_get_group_invite_link,
+    get_group_info_from_link as whatsapp_get_group_info_from_link,
+    join_group_with_link as whatsapp_join_group_with_link,
+    update_group_participants as whatsapp_update_group_participants,
+    set_group_name as whatsapp_set_group_name,
+    set_group_description as whatsapp_set_group_description,
+    set_group_photo as whatsapp_set_group_photo,
+    set_group_announce as whatsapp_set_group_announce,
+    set_group_locked as whatsapp_set_group_locked,
+    set_group_join_approval_mode as whatsapp_set_group_join_approval_mode,
+    get_group_join_requests as whatsapp_get_group_join_requests,
+    decide_group_join_requests as whatsapp_decide_group_join_requests,
+    get_user_info as whatsapp_get_user_info,
+    get_profile_picture as whatsapp_get_profile_picture,
+    get_business_profile as whatsapp_get_business_profile,
+    get_blocklist as whatsapp_get_blocklist,
+    block_contact as whatsapp_block_contact,
+    set_status_message as whatsapp_set_status_message,
+    set_privacy_setting as whatsapp_set_privacy_setting,
+    resolve_business_link as whatsapp_resolve_business_link,
 )
 
 # Initialize FastMCP server
@@ -386,6 +410,232 @@ def set_disappearing_timer(chat_jid: str, timer: str) -> Dict[str, Any]:
     """
     success, message = whatsapp_set_disappearing_timer(chat_jid, timer)
     return {"success": success, "message": message}
+
+
+@mcp.tool()
+def create_group(name: str, participants: List[str]) -> Dict[str, Any]:
+    """Create a new WhatsApp group with the given participants.
+
+    Args:
+        name: Group display name (max ~25 chars)
+        participants: List of phone numbers (with country code, no +) or JIDs
+
+    Returns:
+        Dict with success, message, group_jid (the new group's JID), and full info.
+    """
+    return whatsapp_create_group(name, participants)
+
+
+@mcp.tool()
+def leave_group(chat_jid: str) -> Dict[str, Any]:
+    """Leave a group chat."""
+    success, message = whatsapp_leave_group(chat_jid)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def get_group_info(chat_jid: str) -> Dict[str, Any]:
+    """Get full metadata for a group: participants, admins, settings, description.
+
+    Args:
+        chat_jid: The group JID (ends in @g.us)
+    """
+    return whatsapp_get_group_info(chat_jid)
+
+
+@mcp.tool()
+def list_joined_groups() -> Dict[str, Any]:
+    """List all groups the linked WhatsApp account belongs to, with full metadata."""
+    return whatsapp_list_joined_groups()
+
+
+@mcp.tool()
+def get_group_invite_link(chat_jid: str, reset: bool = False) -> Dict[str, Any]:
+    """Get the invite link for a group (admins only).
+
+    Args:
+        chat_jid: The group JID
+        reset: True to revoke the current link and generate a fresh one
+    """
+    return whatsapp_get_group_invite_link(chat_jid, reset)
+
+
+@mcp.tool()
+def get_group_info_from_link(link: str) -> Dict[str, Any]:
+    """Look up a group's info from an invite link WITHOUT joining.
+
+    Args:
+        link: Full https://chat.whatsapp.com/<code> URL or just the code
+    """
+    return whatsapp_get_group_info_from_link(link)
+
+
+@mcp.tool()
+def join_group_with_link(link: str) -> Dict[str, Any]:
+    """Join a group via an invite link.
+
+    Args:
+        link: Full https://chat.whatsapp.com/<code> URL or just the code
+    """
+    return whatsapp_join_group_with_link(link)
+
+
+@mcp.tool()
+def update_group_participants(chat_jid: str, participants: List[str], action: str) -> Dict[str, Any]:
+    """Add, remove, promote, or demote participants in a group (admins only).
+
+    Args:
+        chat_jid: The group JID
+        participants: List of phone numbers or JIDs to act on
+        action: One of "add", "remove", "promote" (to admin), "demote" (from admin)
+    """
+    success, message = whatsapp_update_group_participants(chat_jid, participants, action)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def set_group_name(chat_jid: str, name: str) -> Dict[str, Any]:
+    """Rename a group (admin or anyone, depending on group lock setting)."""
+    success, message = whatsapp_set_group_name(chat_jid, name)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def set_group_description(chat_jid: str, description: str) -> Dict[str, Any]:
+    """Update a group's description (the text below the group name in WhatsApp UI)."""
+    success, message = whatsapp_set_group_description(chat_jid, description)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def set_group_photo(chat_jid: str, photo_path: str) -> Dict[str, Any]:
+    """Set or remove a group's photo.
+
+    Args:
+        chat_jid: The group JID
+        photo_path: Absolute path to a JPEG file; pass empty string to remove the photo
+    """
+    return whatsapp_set_group_photo(chat_jid, photo_path)
+
+
+@mcp.tool()
+def set_group_announce_only(chat_jid: str, announce_only: bool) -> Dict[str, Any]:
+    """Restrict messaging to admins (True) or allow everyone (False)."""
+    success, message = whatsapp_set_group_announce(chat_jid, announce_only)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def set_group_locked(chat_jid: str, locked: bool) -> Dict[str, Any]:
+    """Restrict group info editing to admins (True) or allow everyone (False)."""
+    success, message = whatsapp_set_group_locked(chat_jid, locked)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def set_group_join_approval_required(chat_jid: str, required: bool) -> Dict[str, Any]:
+    """Require admin approval before new members can join (True), or allow anyone with the link (False)."""
+    success, message = whatsapp_set_group_join_approval_mode(chat_jid, required)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def get_group_join_requests(chat_jid: str) -> List[Dict[str, str]]:
+    """List pending join requests for a group with approval-required mode on."""
+    return whatsapp_get_group_join_requests(chat_jid)
+
+
+@mcp.tool()
+def decide_group_join_requests(
+    chat_jid: str, participants: List[str], approve: bool
+) -> Dict[str, Any]:
+    """Approve or reject pending join requests.
+
+    Args:
+        chat_jid: The group JID
+        participants: List of JIDs of users to act on
+        approve: True to approve, False to reject
+    """
+    success, message = whatsapp_decide_group_join_requests(chat_jid, participants, approve)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def get_user_info(jids: List[str]) -> List[Dict[str, Any]]:
+    """Get full user info: status message, profile picture ID, devices, verified business name.
+
+    Args:
+        jids: List of user JIDs (e.g. "5511999998888@s.whatsapp.net")
+    """
+    return whatsapp_get_user_info(jids)
+
+
+@mcp.tool()
+def get_profile_picture(jid: str, preview: bool = False) -> Dict[str, Any]:
+    """Get a downloadable URL for a user or group profile picture.
+
+    Args:
+        jid: User or group JID
+        preview: True for low-res thumbnail, False for full image
+    """
+    return whatsapp_get_profile_picture(jid, preview)
+
+
+@mcp.tool()
+def get_business_profile(jid: str) -> Dict[str, Any]:
+    """Get business profile info (address, email, categories, hours) for a Business contact."""
+    return whatsapp_get_business_profile(jid)
+
+
+@mcp.tool()
+def get_blocklist() -> List[str]:
+    """List all currently blocked contact JIDs."""
+    return whatsapp_get_blocklist()
+
+
+@mcp.tool()
+def block_contact(jid: str) -> Dict[str, Any]:
+    """Block a contact (they can no longer message or call you)."""
+    success, message = whatsapp_block_contact(jid, block=True)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def unblock_contact(jid: str) -> Dict[str, Any]:
+    """Unblock a previously blocked contact."""
+    success, message = whatsapp_block_contact(jid, block=False)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def set_status_message(message: str) -> Dict[str, Any]:
+    """Update your own "About" / status message (the text shown under your name in your profile)."""
+    success, message_text = whatsapp_set_status_message(message)
+    return {"success": success, "message": message_text}
+
+
+@mcp.tool()
+def set_privacy_setting(setting_type: str, value: str) -> Dict[str, Any]:
+    """Update a privacy setting.
+
+    Args:
+        setting_type: One of "groupadd", "last" (last seen), "status", "profile" (picture),
+                      "readreceipts", "online", "calladd", "messages"
+        value: Depends on setting_type. Common values: "all", "contacts", "contact_blacklist",
+               "none", "match_last_seen" (for "online"), "known" (for "calladd").
+    """
+    success, msg = whatsapp_set_privacy_setting(setting_type, value)
+    return {"success": success, "message": msg}
+
+
+@mcp.tool()
+def resolve_business_link(link: str) -> Dict[str, Any]:
+    """Resolve a wa.me/p/<code> business link into JID, business name, and pre-filled greeting.
+
+    Args:
+        link: Full wa.me URL or just the code
+    """
+    return whatsapp_resolve_business_link(link)
 
 
 @mcp.tool()

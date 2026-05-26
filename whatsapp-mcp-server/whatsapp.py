@@ -767,6 +767,26 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
         return None
 
 
+def _get_json(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """GET a JSON response from the bridge with consistent error handling."""
+    try:
+        response = requests.get(f"{WHATSAPP_API_BASE_URL}{path}", params=params)
+        if response.status_code != 200:
+            return {"success": False, "message": f"HTTP {response.status_code}: {response.text}"}
+        return response.json()
+    except (requests.RequestException, json.JSONDecodeError) as e:
+        return {"success": False, "message": str(e)}
+
+
+def _post_json(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """POST and return the full parsed JSON body."""
+    try:
+        response = requests.post(f"{WHATSAPP_API_BASE_URL}{path}", json=payload)
+        return response.json()
+    except (requests.RequestException, json.JSONDecodeError) as e:
+        return {"success": False, "message": str(e)}
+
+
 def _post_simple(path: str, payload: Dict[str, Any]) -> Tuple[bool, str]:
     """POST a JSON body to the bridge and unpack a {success, message} response.
 
@@ -885,6 +905,119 @@ def set_disappearing_timer(chat_jid: str, timer: str) -> Tuple[bool, str]:
         "/chats/disappearing-timer",
         {"chat_jid": chat_jid, "timer": timer},
     )
+
+
+# --- Groups ---
+
+def create_group(name: str, participants: List[str]) -> Dict[str, Any]:
+    """Create a new WhatsApp group."""
+    return _post_json("/groups/create", {"name": name, "participants": participants})
+
+
+def leave_group(chat_jid: str) -> Tuple[bool, str]:
+    return _post_simple("/groups/leave", {"chat_jid": chat_jid})
+
+
+def get_group_info(chat_jid: str) -> Dict[str, Any]:
+    return _get_json("/groups/info", {"chat_jid": chat_jid})
+
+
+def list_joined_groups() -> Dict[str, Any]:
+    return _get_json("/groups/list")
+
+
+def get_group_invite_link(chat_jid: str, reset: bool = False) -> Dict[str, Any]:
+    return _post_json("/groups/invite-link", {"chat_jid": chat_jid, "reset": reset})
+
+
+def get_group_info_from_link(link: str) -> Dict[str, Any]:
+    return _post_json("/groups/info-from-link", {"link": link})
+
+
+def join_group_with_link(link: str) -> Dict[str, Any]:
+    return _post_json("/groups/join", {"link": link})
+
+
+def update_group_participants(chat_jid: str, participants: List[str], action: str) -> Tuple[bool, str]:
+    return _post_simple(
+        "/groups/participants",
+        {"chat_jid": chat_jid, "participants": participants, "action": action},
+    )
+
+
+def set_group_name(chat_jid: str, name: str) -> Tuple[bool, str]:
+    return _post_simple("/groups/name", {"chat_jid": chat_jid, "name": name})
+
+
+def set_group_description(chat_jid: str, description: str) -> Tuple[bool, str]:
+    return _post_simple("/groups/description", {"chat_jid": chat_jid, "description": description})
+
+
+def set_group_photo(chat_jid: str, photo_path: str) -> Dict[str, Any]:
+    return _post_json("/groups/photo", {"chat_jid": chat_jid, "photo_path": photo_path})
+
+
+def set_group_announce(chat_jid: str, announce: bool) -> Tuple[bool, str]:
+    return _post_simple("/groups/announce", {"chat_jid": chat_jid, "value": announce})
+
+
+def set_group_locked(chat_jid: str, locked: bool) -> Tuple[bool, str]:
+    return _post_simple("/groups/locked", {"chat_jid": chat_jid, "value": locked})
+
+
+def set_group_join_approval_mode(chat_jid: str, required: bool) -> Tuple[bool, str]:
+    return _post_simple("/groups/approval-mode", {"chat_jid": chat_jid, "value": required})
+
+
+def get_group_join_requests(chat_jid: str) -> List[Dict[str, str]]:
+    res = _get_json("/groups/requests", {"chat_jid": chat_jid})
+    return res.get("requests", []) or []
+
+
+def decide_group_join_requests(chat_jid: str, participants: List[str], approve: bool) -> Tuple[bool, str]:
+    return _post_simple(
+        "/groups/requests/decide",
+        {"chat_jid": chat_jid, "participants": participants, "approve": approve},
+    )
+
+
+# --- Contacts / users ---
+
+def get_user_info(jids: List[str]) -> List[Dict[str, Any]]:
+    res = _post_json("/users/info", {"jids": jids})
+    return res.get("users", []) or []
+
+
+def get_profile_picture(jid: str, preview: bool = False) -> Dict[str, Any]:
+    return _post_json("/users/profile-picture", {"jid": jid, "preview": preview})
+
+
+def get_business_profile(jid: str) -> Dict[str, Any]:
+    return _post_json("/users/business-profile", {"jid": jid})
+
+
+def get_blocklist() -> List[str]:
+    res = _get_json("/users/blocklist")
+    return res.get("jids", []) or []
+
+
+def block_contact(jid: str, block: bool) -> Tuple[bool, str]:
+    return _post_simple("/users/block", {"jid": jid, "block": block})
+
+
+def set_status_message(message: str) -> Tuple[bool, str]:
+    return _post_simple("/users/status-message", {"message": message})
+
+
+def set_privacy_setting(setting_type: str, value: str) -> Tuple[bool, str]:
+    return _post_simple(
+        "/users/privacy",
+        {"setting_type": setting_type, "value": value},
+    )
+
+
+def resolve_business_link(link: str) -> Dict[str, Any]:
+    return _post_json("/users/resolve-business-link", {"link": link})
 
 
 # --- Labels ---
