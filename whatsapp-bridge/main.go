@@ -111,7 +111,12 @@ func NewMessageStore() (*MessageStore, error) {
 		return nil, fmt.Errorf("failed to migrate schema: %v", err)
 	}
 
-	return &MessageStore{db: db}, nil
+	store := &MessageStore{db: db}
+	if err := migrateLabelTables(store); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate label tables: %v", err)
+	}
+	return store, nil
 }
 
 // migrateUnreadColumns adds chats.unread_count and messages.is_read to
@@ -984,6 +989,9 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		})
 	})
 
+	// Register routes from sibling files (labels.go, messaging.go, groups.go, contacts.go).
+	registerLabelRoutes(client, messageStore)
+
 	// Start the server (bound to loopback only — never expose to LAN)
 	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
@@ -1069,6 +1077,13 @@ func main() {
 			// Handle receipt events (when someone reads a message we sent)
 			fmt.Printf("Received receipt: %v\n", v)
 			handleReceipt(messageStore, v, logger)
+
+		case *events.LabelEdit:
+			handleLabelEdit(messageStore, v, logger)
+		case *events.LabelAssociationChat:
+			handleLabelAssociationChat(messageStore, v, logger)
+		case *events.LabelAssociationMessage:
+			handleLabelAssociationMessage(messageStore, v, logger)
 		}
 	})
 

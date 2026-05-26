@@ -13,7 +13,13 @@ from whatsapp import (
     send_file as whatsapp_send_file,
     send_audio_message as whatsapp_audio_voice_message,
     download_media as whatsapp_download_media,
-    get_unread_messages as whatsapp_get_unread_messages
+    get_unread_messages as whatsapp_get_unread_messages,
+    list_labels as whatsapp_list_labels,
+    get_chats_with_label as whatsapp_get_chats_with_label,
+    get_messages_with_label as whatsapp_get_messages_with_label,
+    upsert_label as whatsapp_upsert_label,
+    label_chat as whatsapp_label_chat,
+    label_message as whatsapp_label_message,
 )
 
 # Initialize FastMCP server
@@ -246,6 +252,134 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
             "success": False,
             "message": "Failed to download media"
         }
+
+@mcp.tool()
+def list_labels(include_deleted: bool = False) -> List[Dict[str, Any]]:
+    """List WhatsApp Business labels (the colored tags) known to the bridge.
+
+    Labels are a WhatsApp Business feature — they will only exist if the linked
+    account is a Business account. Returns ID, name, color, and deleted flag.
+
+    Args:
+        include_deleted: Include tombstoned labels (default False)
+    """
+    return whatsapp_list_labels(include_deleted)
+
+
+@mcp.tool()
+def get_chats_with_label(label_id: str) -> List[str]:
+    """List chat JIDs currently tagged with the given label.
+
+    Args:
+        label_id: The label ID (get it via list_labels)
+    """
+    return whatsapp_get_chats_with_label(label_id)
+
+
+@mcp.tool()
+def get_messages_with_label(label_id: str) -> List[Dict[str, str]]:
+    """List {chat_jid, message_id} pairs currently tagged with the given label.
+
+    Args:
+        label_id: The label ID (get it via list_labels)
+    """
+    return whatsapp_get_messages_with_label(label_id)
+
+
+@mcp.tool()
+def create_label(name: str, color: int = 0) -> Dict[str, Any]:
+    """Create a new WhatsApp Business label.
+
+    Args:
+        name: Display name for the label
+        color: Color index (0-19 in WhatsApp's palette; defaults to 0)
+
+    Returns:
+        Dict with success, message, and the generated label_id.
+    """
+    success, message, label_id = whatsapp_upsert_label(
+        label_id="", name=name, color=color, deleted=False
+    )
+    return {"success": success, "message": message, "label_id": label_id}
+
+
+@mcp.tool()
+def edit_label(label_id: str, name: str, color: int = 0) -> Dict[str, Any]:
+    """Edit an existing label's name or color.
+
+    Args:
+        label_id: ID of the label to edit
+        name: New display name
+        color: New color index
+    """
+    success, message, _ = whatsapp_upsert_label(
+        label_id=label_id, name=name, color=color, deleted=False
+    )
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def delete_label(label_id: str) -> Dict[str, Any]:
+    """Delete (tombstone) a label across all linked devices.
+
+    Args:
+        label_id: ID of the label to delete
+    """
+    success, message, _ = whatsapp_upsert_label(
+        label_id=label_id, name="", color=0, deleted=True
+    )
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def add_label_to_chat(label_id: str, chat_jid: str) -> Dict[str, Any]:
+    """Tag a chat with a label.
+
+    Args:
+        label_id: The label ID
+        chat_jid: The chat JID (works for both individual chats and groups)
+    """
+    success, message = whatsapp_label_chat(label_id, chat_jid, labeled=True)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def remove_label_from_chat(label_id: str, chat_jid: str) -> Dict[str, Any]:
+    """Untag a chat (remove a label).
+
+    Args:
+        label_id: The label ID
+        chat_jid: The chat JID
+    """
+    success, message = whatsapp_label_chat(label_id, chat_jid, labeled=False)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def add_label_to_message(label_id: str, chat_jid: str, message_id: str) -> Dict[str, Any]:
+    """Tag a specific message with a label.
+
+    Args:
+        label_id: The label ID
+        chat_jid: The chat the message belongs to
+        message_id: The message ID
+    """
+    success, message = whatsapp_label_message(label_id, chat_jid, message_id, labeled=True)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def remove_label_from_message(label_id: str, chat_jid: str, message_id: str) -> Dict[str, Any]:
+    """Untag a specific message.
+
+    Args:
+        label_id: The label ID
+        chat_jid: The chat the message belongs to
+        message_id: The message ID
+    """
+    success, message = whatsapp_label_message(label_id, chat_jid, message_id, labeled=False)
+    return {"success": success, "message": message}
+
 
 @mcp.tool()
 def get_unread_messages(limit: int = 10) -> List[Dict[str, Any]]:
