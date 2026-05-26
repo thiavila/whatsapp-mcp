@@ -20,6 +20,14 @@ from whatsapp import (
     upsert_label as whatsapp_upsert_label,
     label_chat as whatsapp_label_chat,
     label_message as whatsapp_label_message,
+    edit_message as whatsapp_edit_message,
+    delete_message as whatsapp_delete_message,
+    react_to_message as whatsapp_react_to_message,
+    mark_messages_read as whatsapp_mark_messages_read,
+    send_typing_indicator as whatsapp_send_typing_indicator,
+    create_poll as whatsapp_create_poll,
+    check_phones_on_whatsapp as whatsapp_check_phones_on_whatsapp,
+    set_disappearing_timer as whatsapp_set_disappearing_timer,
 )
 
 # Initialize FastMCP server
@@ -252,6 +260,133 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
             "success": False,
             "message": "Failed to download media"
         }
+
+@mcp.tool()
+def edit_message(chat_jid: str, message_id: str, new_content: str) -> Dict[str, Any]:
+    """Edit a message you previously sent. WhatsApp only allows edits within ~20 minutes.
+
+    Args:
+        chat_jid: The chat JID
+        message_id: The message ID
+        new_content: The new text
+    """
+    success, message = whatsapp_edit_message(chat_jid, message_id, new_content)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def delete_message(chat_jid: str, message_id: str) -> Dict[str, Any]:
+    """Delete (revoke for everyone) a message you sent.
+
+    Args:
+        chat_jid: The chat JID
+        message_id: The message ID
+    """
+    success, message = whatsapp_delete_message(chat_jid, message_id)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def react_to_message(
+    chat_jid: str,
+    message_id: str,
+    emoji: str,
+    sender_jid: str = "",
+    is_from_me: bool = False,
+) -> Dict[str, Any]:
+    """React to a message with an emoji (or clear a reaction by passing emoji='').
+
+    For incoming DMs, leave sender_jid empty. For incoming group messages, pass
+    the participant JID. For your own messages, set is_from_me=True.
+
+    Args:
+        chat_jid: The chat JID
+        message_id: The message ID
+        emoji: The emoji to react with (e.g. "👍"). Empty string removes the reaction.
+        sender_jid: Original sender JID — required for group messages
+        is_from_me: Set True when reacting to your own messages
+    """
+    success, message = whatsapp_react_to_message(
+        chat_jid, message_id, emoji, sender_jid=sender_jid, is_from_me=is_from_me
+    )
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def mark_messages_read(
+    chat_jid: str, message_ids: List[str], sender_jid: str = ""
+) -> Dict[str, Any]:
+    """Send read receipts for specific messages. Different from chat-level mark-read.
+
+    Args:
+        chat_jid: The chat JID
+        message_ids: List of message IDs to mark as read
+        sender_jid: Original sender JID; if omitted, derived from local store
+    """
+    success, message = whatsapp_mark_messages_read(chat_jid, message_ids, sender_jid=sender_jid)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def send_typing_indicator(
+    chat_jid: str, is_typing: bool = True, is_recording_audio: bool = False
+) -> Dict[str, Any]:
+    """Send a "composing..." or "recording audio..." indicator to a chat.
+
+    Use is_typing=False to clear the indicator (sends "paused" presence).
+
+    Args:
+        chat_jid: The chat JID
+        is_typing: True to send "composing", False to send "paused"
+        is_recording_audio: When typing, set True to show "recording audio" instead
+    """
+    success, message = whatsapp_send_typing_indicator(chat_jid, is_typing, is_recording_audio)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def create_poll(
+    chat_jid: str,
+    name: str,
+    options: List[str],
+    selectable_option_count: int = 1,
+) -> Dict[str, Any]:
+    """Send a poll message to a chat.
+
+    Args:
+        chat_jid: The chat JID
+        name: The poll question
+        options: List of option strings (minimum 2)
+        selectable_option_count: 1 for single-choice, >1 for multi-choice
+    """
+    success, message = whatsapp_create_poll(chat_jid, name, options, selectable_option_count)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def check_phones_on_whatsapp(phones: List[str]) -> List[Dict[str, Any]]:
+    """Check which phone numbers are registered on WhatsApp.
+
+    Args:
+        phones: List of phone numbers in E.164 format WITH leading "+" (e.g. "+5511999998888")
+
+    Returns:
+        For each phone: query, jid, is_on_whatsapp, and verified_name if it's a Business account.
+    """
+    return whatsapp_check_phones_on_whatsapp(phones)
+
+
+@mcp.tool()
+def set_disappearing_timer(chat_jid: str, timer: str) -> Dict[str, Any]:
+    """Set disappearing messages timer for a chat.
+
+    Args:
+        chat_jid: The chat JID
+        timer: One of "off", "24h", "7d", "90d"
+    """
+    success, message = whatsapp_set_disappearing_timer(chat_jid, timer)
+    return {"success": success, "message": message}
+
 
 @mcp.tool()
 def list_labels(include_deleted: bool = False) -> List[Dict[str, Any]]:
