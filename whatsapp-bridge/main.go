@@ -991,6 +991,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 
 	// Register routes from sibling files (labels.go, messaging.go, groups.go, contacts.go).
 	registerLabelRoutes(client, messageStore)
+	registerMessagingRoutes(client, messageStore)
 
 	// Start the server (bound to loopback only — never expose to LAN)
 	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)

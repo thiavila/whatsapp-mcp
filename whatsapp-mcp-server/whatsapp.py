@@ -767,6 +767,128 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
         return None
 
 
+def _post_simple(path: str, payload: Dict[str, Any]) -> Tuple[bool, str]:
+    """POST a JSON body to the bridge and unpack a {success, message} response.
+
+    Used by the dozen-ish action endpoints that all return the same shape.
+    Centralises HTTP/JSON exception handling.
+    """
+    try:
+        response = requests.post(f"{WHATSAPP_API_BASE_URL}{path}", json=payload)
+        result = response.json()
+        return bool(result.get("success", False)), result.get("message", "Unknown response")
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+    except json.JSONDecodeError:
+        return False, f"Error parsing response: {response.text}"
+
+
+# --- Rich messaging ---
+
+def edit_message(chat_jid: str, message_id: str, new_content: str) -> Tuple[bool, str]:
+    """Edit a message you previously sent (within WhatsApp's 20-minute window)."""
+    return _post_simple(
+        "/messages/edit",
+        {"chat_jid": chat_jid, "message_id": message_id, "new_content": new_content},
+    )
+
+
+def delete_message(chat_jid: str, message_id: str) -> Tuple[bool, str]:
+    """Revoke (delete-for-everyone) a message you sent."""
+    return _post_simple(
+        "/messages/delete",
+        {"chat_jid": chat_jid, "message_id": message_id},
+    )
+
+
+def react_to_message(
+    chat_jid: str,
+    message_id: str,
+    emoji: str,
+    sender_jid: str = "",
+    is_from_me: bool = False,
+) -> Tuple[bool, str]:
+    """React (or clear a reaction with emoji='') to a message.
+
+    For incoming DMs, leave ``sender_jid`` empty. For groups, pass the
+    participant JID. For your own messages, set ``is_from_me=True``.
+    """
+    return _post_simple(
+        "/messages/react",
+        {
+            "chat_jid": chat_jid,
+            "message_id": message_id,
+            "sender_jid": sender_jid,
+            "is_from_me": is_from_me,
+            "emoji": emoji,
+        },
+    )
+
+
+def mark_messages_read(chat_jid: str, message_ids: List[str], sender_jid: str = "") -> Tuple[bool, str]:
+    """Send read receipts for specific messages."""
+    return _post_simple(
+        "/messages/mark-read",
+        {"chat_jid": chat_jid, "message_ids": message_ids, "sender_jid": sender_jid},
+    )
+
+
+def send_typing_indicator(
+    chat_jid: str, is_typing: bool = True, is_recording_audio: bool = False
+) -> Tuple[bool, str]:
+    """Send "composing" / "recording audio" / "paused" presence to a chat."""
+    return _post_simple(
+        "/messages/typing",
+        {
+            "chat_jid": chat_jid,
+            "is_typing": is_typing,
+            "is_recording_audio": is_recording_audio,
+        },
+    )
+
+
+def create_poll(
+    chat_jid: str,
+    name: str,
+    options: List[str],
+    selectable_option_count: int = 1,
+) -> Tuple[bool, str]:
+    """Send a poll message. ``selectable_option_count``=1 → single choice."""
+    return _post_simple(
+        "/messages/poll",
+        {
+            "chat_jid": chat_jid,
+            "name": name,
+            "options": options,
+            "selectable_option_count": selectable_option_count,
+        },
+    )
+
+
+def check_phones_on_whatsapp(phones: List[str]) -> List[Dict[str, Any]]:
+    """Check whether each phone number is registered on WhatsApp.
+
+    Phone numbers must be in E.164 format with the leading ``+``.
+    """
+    try:
+        response = requests.post(f"{WHATSAPP_API_BASE_URL}/contacts/check", json={"phones": phones})
+        if response.status_code != 200:
+            return []
+        return response.json().get("results", []) or []
+    except (requests.RequestException, json.JSONDecodeError):
+        return []
+
+
+def set_disappearing_timer(chat_jid: str, timer: str) -> Tuple[bool, str]:
+    """Set disappearing messages timer for a chat. Accepts: off, 24h, 7d, 90d."""
+    return _post_simple(
+        "/chats/disappearing-timer",
+        {"chat_jid": chat_jid, "timer": timer},
+    )
+
+
+# --- Labels ---
+
 def list_labels(include_deleted: bool = False) -> List[Dict[str, Any]]:
     """Fetch known WhatsApp Business labels from the bridge's local store.
 
