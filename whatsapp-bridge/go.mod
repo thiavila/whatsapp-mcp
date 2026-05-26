@@ -1,4 +1,4 @@
-module whatsapp-client
+module whatsapp-bridge
 
 go 1.25.0
 
