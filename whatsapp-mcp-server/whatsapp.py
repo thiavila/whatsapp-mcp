@@ -767,6 +767,107 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
         return None
 
 
+def list_labels(include_deleted: bool = False) -> List[Dict[str, Any]]:
+    """Fetch known WhatsApp Business labels from the bridge's local store.
+
+    The store is populated from app-state sync events, so newly created labels
+    only appear here after the bridge has received the corresponding sync.
+    """
+    try:
+        url = f"{WHATSAPP_API_BASE_URL}/labels"
+        params = {"include_deleted": "true"} if include_deleted else None
+        response = requests.get(url, params=params)
+        if response.status_code != 200:
+            return []
+        return response.json().get("labels", []) or []
+    except (requests.RequestException, json.JSONDecodeError):
+        return []
+
+
+def get_chats_with_label(label_id: str) -> List[str]:
+    """Return chat JIDs that currently carry the given label."""
+    try:
+        url = f"{WHATSAPP_API_BASE_URL}/labels/chats"
+        response = requests.get(url, params={"label_id": label_id})
+        if response.status_code != 200:
+            return []
+        return response.json().get("chats", []) or []
+    except (requests.RequestException, json.JSONDecodeError):
+        return []
+
+
+def get_messages_with_label(label_id: str) -> List[Dict[str, str]]:
+    """Return {chat_jid, message_id} pairs that currently carry the given label."""
+    try:
+        url = f"{WHATSAPP_API_BASE_URL}/labels/messages"
+        response = requests.get(url, params={"label_id": label_id})
+        if response.status_code != 200:
+            return []
+        return response.json().get("messages", []) or []
+    except (requests.RequestException, json.JSONDecodeError):
+        return []
+
+
+def upsert_label(label_id: str, name: str, color: int, deleted: bool) -> Tuple[bool, str, Optional[str]]:
+    """Create / edit / delete a label (unified endpoint).
+
+    Pass an empty ``label_id`` to create a new one — the bridge generates the ID
+    and returns it. Pass ``deleted=True`` to tombstone an existing label.
+    """
+    try:
+        url = f"{WHATSAPP_API_BASE_URL}/labels/edit"
+        payload = {
+            "label_id": label_id,
+            "name": name,
+            "color": color,
+            "deleted": deleted,
+        }
+        response = requests.post(url, json=payload)
+        result = response.json()
+        return (
+            bool(result.get("success", False)),
+            result.get("message", "Unknown response"),
+            result.get("label_id"),
+        )
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}", None
+    except json.JSONDecodeError:
+        return False, f"Error parsing response: {response.text}", None
+
+
+def label_chat(label_id: str, chat_jid: str, labeled: bool) -> Tuple[bool, str]:
+    """Add (``labeled=True``) or remove (``labeled=False``) a label from a chat."""
+    try:
+        url = f"{WHATSAPP_API_BASE_URL}/labels/chat"
+        payload = {"label_id": label_id, "chat_jid": chat_jid, "labeled": labeled}
+        response = requests.post(url, json=payload)
+        result = response.json()
+        return bool(result.get("success", False)), result.get("message", "Unknown response")
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+    except json.JSONDecodeError:
+        return False, f"Error parsing response: {response.text}"
+
+
+def label_message(label_id: str, chat_jid: str, message_id: str, labeled: bool) -> Tuple[bool, str]:
+    """Add or remove a label from a specific message."""
+    try:
+        url = f"{WHATSAPP_API_BASE_URL}/labels/message"
+        payload = {
+            "label_id": label_id,
+            "chat_jid": chat_jid,
+            "message_id": message_id,
+            "labeled": labeled,
+        }
+        response = requests.post(url, json=payload)
+        result = response.json()
+        return bool(result.get("success", False)), result.get("message", "Unknown response")
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+    except json.JSONDecodeError:
+        return False, f"Error parsing response: {response.text}"
+
+
 def get_unread_messages(limit: int = 10) -> List[Dict[str, Any]]:
     """Get chats with unread messages, most recent first.
 
