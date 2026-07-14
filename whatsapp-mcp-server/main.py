@@ -85,8 +85,8 @@ def list_messages(
     Args:
         after: Optional ISO-8601 formatted string to only return messages after this date
         before: Optional ISO-8601 formatted string to only return messages before this date
-        sender_phone_number: Optional phone number to filter messages by sender
-        chat_jid: Optional chat JID to filter messages by chat
+        sender_phone_number: Optional phone number to filter messages by sender. PN/LID aliases are resolved automatically.
+        chat_jid: Optional phone number or chat JID. PN/LID aliases are resolved automatically.
         query: Optional search term to filter messages by content
         limit: Maximum number of messages to return (default 20)
         page: Page number for pagination (default 0)
@@ -136,10 +136,10 @@ def list_chats(
 
 @mcp.tool()
 def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]:
-    """Get WhatsApp chat metadata by JID.
+    """Get WhatsApp chat metadata by phone number or JID.
     
     Args:
-        chat_jid: The JID of the chat to retrieve
+        chat_jid: Phone number, PN JID, LID JID, or group JID to retrieve
         include_last_message: Whether to include the last message (default True)
     """
     chat = whatsapp_get_chat(chat_jid, include_last_message)
@@ -147,7 +147,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]
 
 @mcp.tool()
 def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
-    """Get WhatsApp chat metadata by sender phone number.
+    """Get direct-chat metadata by phone number, resolving its PN/LID aliases.
     
     Args:
         sender_phone_number: The phone number to search for
@@ -157,7 +157,7 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
 
 @mcp.tool()
 def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str, Any]]:
-    """Get all WhatsApp chats involving the contact.
+    """Get all WhatsApp chats involving the contact across PN/LID aliases.
     
     Args:
         jid: The contact's JID to search for
@@ -169,7 +169,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str
 
 @mcp.tool()
 def get_last_interaction(jid: str) -> str:
-    """Get most recent WhatsApp message involving the contact.
+    """Get the most recent WhatsApp message across the contact's PN/LID aliases.
     
     Args:
         jid: The JID of the contact to search for
