@@ -7,10 +7,18 @@ import os.path
 import requests
 import json
 import audio
+import random
+import time
 
 MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
 WHATSAPP_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'whatsapp.db')
 WHATSAPP_API_BASE_URL = "http://localhost:8080/api"
+
+TYPING_CHARS_PER_SECOND = 12.0
+TYPING_JITTER_MIN = 0.75
+TYPING_JITTER_MAX = 1.25
+TYPING_DELAY_MIN_SECONDS = 1.0
+TYPING_DELAY_MAX_SECONDS = 12.0
 
 PN_SERVER = "s.whatsapp.net"
 LID_SERVER = "lid"
@@ -782,11 +790,31 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
         if 'conn' in locals():
             conn.close()
 
-def send_message(recipient: str, message: str) -> Tuple[bool, str]:
+def _typing_delay_seconds(message: str) -> float:
+    """Return a bounded, length-based typing delay with natural jitter."""
+    base_delay = len(message) / TYPING_CHARS_PER_SECOND
+    jittered_delay = base_delay * random.uniform(TYPING_JITTER_MIN, TYPING_JITTER_MAX)
+    return min(
+        TYPING_DELAY_MAX_SECONDS,
+        max(TYPING_DELAY_MIN_SECONDS, jittered_delay),
+    )
+
+
+def send_message(
+    recipient: str, message: str, show_typing: bool = True
+) -> Tuple[bool, str]:
+    typing_jid = None
+    typing_started = False
     try:
         # Validate input
         if not recipient:
             return False, "Recipient must be provided"
+
+        if show_typing:
+            typing_jid = resolve_chat_identity(recipient).canonical_jid
+            typing_started, _ = send_typing_indicator(typing_jid, is_typing=True)
+            if typing_started:
+                time.sleep(_typing_delay_seconds(message))
         
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {
@@ -809,6 +837,10 @@ def send_message(recipient: str, message: str) -> Tuple[bool, str]:
         return False, f"Error parsing response: {response.text}"
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
+    finally:
+        if typing_started and typing_jid:
+            # Clearing presence is best-effort and must not change send status.
+            send_typing_indicator(typing_jid, is_typing=False)
 
 def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
     try:

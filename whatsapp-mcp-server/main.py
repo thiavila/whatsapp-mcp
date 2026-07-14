@@ -196,14 +196,16 @@ def get_message_context(
 @mcp.tool()
 def send_message(
     recipient: str,
-    message: str
+    message: str,
+    show_typing: bool = True,
 ) -> Dict[str, Any]:
-    """Send a WhatsApp message to a person or group. For group chats use the JID.
+    """Send a WhatsApp message to a person or group with a natural typing delay.
 
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
         message: The message text to send
+        show_typing: Show a length-based, randomized typing indicator before sending (default True)
     
     Returns:
         A dictionary containing success status and a status message
@@ -216,7 +218,7 @@ def send_message(
         }
     
     # Call the whatsapp_send_message function with the unified recipient parameter
-    success, status_message = whatsapp_send_message(recipient, message)
+    success, status_message = whatsapp_send_message(recipient, message, show_typing)
     return {
         "success": success,
         "message": status_message
