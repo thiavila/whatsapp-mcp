@@ -45,6 +45,7 @@ Both components are required. The Go bridge stays running; the MCP client normal
   - Debian/Ubuntu: `sudo apt install build-essential`.
   - Windows: use [MSYS2](https://www.msys2.org/) and enable CGO.
 - Optional: [FFmpeg](https://ffmpeg.org/download.html) for converting audio files into WhatsApp-compatible Opus voice notes.
+- Optional: [parakeet-cli](https://github.com/lucataco/parakeet-cli) plus FFmpeg to transcribe received audio locally with NVIDIA Parakeet TDT 0.6B v3.
 
 ## Installation
 
@@ -184,6 +185,34 @@ The `send_file` and voice-note tools accept local file paths. A malicious or com
 ```
 
 This is a presentation feature, not a guarantee against WhatsApp abuse or automation controls.
+
+## Local audio transcription with Parakeet
+
+The `transcribe_audio` MCP tool downloads a WhatsApp audio message and
+transcribes it entirely on-device. It does not call a cloud transcription API.
+
+On Apple Silicon macOS, install the CLI with Homebrew:
+
+```bash
+brew install lucataco/tap/parakeet-cli
+```
+
+If you already use [Handy](https://github.com/cjpais/Handy) with
+`parakeet-tdt-0.6b-v3`, the MCP detects and reuses its ONNX INT8 model. Otherwise
+download the model once:
+
+```bash
+parakeet download
+```
+
+You can also point to a compatible model explicitly:
+
+```bash
+export PARAKEET_MODEL_DIR="/absolute/path/to/parakeet-tdt-0.6b-v3-int8"
+```
+
+WhatsApp voice notes are normally OGG/Opus, so FFmpeg must be available on
+`PATH`. The temporary WAV used during transcription is deleted immediately.
 
 ## Troubleshooting
 

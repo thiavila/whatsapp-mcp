@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
+from transcription import transcribe_audio_file
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
     list_messages as whatsapp_list_messages,
@@ -286,6 +287,50 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
             "success": False,
             "message": "Failed to download media"
         }
+
+
+@mcp.tool()
+def transcribe_audio(
+    message_id: str,
+    chat_jid: str,
+    model_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Download and locally transcribe a WhatsApp audio message with Parakeet TDT.
+
+    Requires parakeet-cli, FFmpeg for WhatsApp OGG/Opus audio, and a compatible
+    Parakeet TDT 0.6B v3 ONNX INT8 model. The Handy model is detected
+    automatically on macOS. No cloud transcription API is used.
+
+    Args:
+        message_id: The ID of the WhatsApp audio message
+        chat_jid: The JID of the chat containing the audio message
+        model_dir: Optional compatible model directory. Normally auto-detected.
+
+    Returns:
+        A dictionary containing the transcript and local inference timing
+    """
+    file_path = whatsapp_download_media(message_id, chat_jid)
+    if not file_path:
+        return {
+            "success": False,
+            "message": "Failed to download WhatsApp audio",
+        }
+
+    try:
+        result = transcribe_audio_file(file_path, model_dir=model_dir)
+    except RuntimeError as exc:
+        return {
+            "success": False,
+            "message": str(exc),
+            "file_path": file_path,
+        }
+
+    return {
+        "success": True,
+        "message": "Audio transcribed locally with Parakeet",
+        "file_path": file_path,
+        **result,
+    }
 
 @mcp.tool()
 def edit_message(chat_jid: str, message_id: str, new_content: str) -> Dict[str, Any]:
