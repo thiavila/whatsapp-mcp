@@ -1,8 +1,23 @@
 # WhatsApp MCP
 
-An unofficial, local-first [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets compatible AI clients search, read, and send WhatsApp messages.
+An unofficial, local-first [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets compatible AI clients search, read, send, and understand WhatsApp messages.
 
-The WhatsApp connection is powered by [WhatsMeow](https://github.com/tulir/whatsmeow), a Go library for the WhatsApp Web multidevice API. This project is a maintained fork of [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp).
+The WhatsApp connection is powered by [WhatsMeow](https://github.com/tulir/whatsmeow), a Go library for the WhatsApp Web multidevice API.
+
+## About this adaptation
+
+This project started from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) and keeps its core architecture: a Go/WhatsMeow bridge connected to a Python MCP server. This fork adapts that foundation for broader, more reliable day-to-day use.
+
+The main improvements in this adaptation include:
+
+- Local audio transcription with NVIDIA Parakeet TDT, including automatic reuse of a compatible model installed by Handy.
+- Unified direct conversations across WhatsApp phone-number JIDs and privacy-preserving LIDs.
+- Unread-message tracking from real-time events and synchronized history.
+- More complete messaging, group administration, contact/profile, privacy, blocklist, and WhatsApp Business label tools.
+- Length-based randomized typing indicators for more natural text sending, enabled by default and configurable per message.
+- Updated WhatsMeow compatibility, loopback-only REST access, safer local-data defaults, and clearer Codex/Claude installation guidance.
+
+The original project and contributors remain credited through the Git history and license. The features above describe how this fork has been adapted; they are not intended as a line-by-line attribution of every underlying component.
 
 > [!IMPORTANT]
 > This project is not affiliated with, authorized by, or endorsed by WhatsApp or Meta. It uses an unofficial WhatsApp client. Use it only with accounts and conversations you are authorized to access, and review the [WhatsApp Terms of Service](https://www.whatsapp.com/legal/terms-of-service). Do not use it for spam, bulk messaging, or impermissible automation. Your account may be limited or banned.
@@ -13,6 +28,7 @@ The WhatsApp connection is powered by [WhatsMeow](https://github.com/tulir/whats
 
 - Search contacts, chats, and message history.
 - Read text and media metadata with surrounding context.
+- Download and transcribe received voice notes locally with Parakeet.
 - Send text, files, voice notes, reactions, polls, and typing indicators.
 - Edit or delete messages and send read receipts.
 - Manage groups, invite links, participants, profile information, privacy settings, blocks, and business labels.
