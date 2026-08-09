@@ -273,7 +273,7 @@ func registerContactRoutes(client *whatsmeow.Client) {
 			writeJSON(http.StatusBadRequest, GenericResponse{Success: false, Message: "Invalid request format"})
 			return
 		}
-		if err := client.SetStatusMessage(context.Background(), req.Message); err != nil {
+		if err := client.SetStatusMessage(context.Background(), types.SetStatusInput{Text: &req.Message}); err != nil {
 			writeJSON(http.StatusInternalServerError, GenericResponse{Success: false, Message: err.Error()})
 			return
 		}
