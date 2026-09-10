@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"net/http"
@@ -13,7 +15,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -46,6 +50,17 @@ type Message struct {
 type MessageStore struct {
 	db *sql.DB
 }
+
+const (
+	defaultEagerMediaMaxBytes      uint64 = 64 << 20
+	defaultEagerMediaCacheMaxBytes uint64 = 2 << 30
+	defaultMediaDownloadMaxBytes   uint64 = 512 << 20
+	mediaEncryptionOverheadLimit   uint64 = 64 << 10
+)
+
+var eagerMediaDownloadSlots = make(chan struct{}, 2)
+
+var eagerMediaCacheReservations mediaCacheReservations
 
 // Chat represents a chat with basic information
 type Chat struct {
@@ -508,10 +523,160 @@ func extractMediaInfo(msg *waProto.Message) (mediaType string, filename string, 
 	return "", "", "", nil, nil, nil, 0
 }
 
+func eagerMediaDownloadEnabled() bool {
+	enabled, err := strconv.ParseBool(strings.TrimSpace(os.Getenv("WHATSAPP_EAGER_MEDIA_DOWNLOAD")))
+	return err == nil && enabled
+}
+
+func eagerMediaMaxBytes() uint64 {
+	raw := strings.TrimSpace(os.Getenv("WHATSAPP_EAGER_MEDIA_MAX_BYTES"))
+	if raw == "" {
+		return defaultEagerMediaMaxBytes
+	}
+	value, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || value == 0 {
+		return defaultEagerMediaMaxBytes
+	}
+	return value
+}
+
+func eagerMediaCacheMaxBytes() uint64 {
+	raw := strings.TrimSpace(os.Getenv("WHATSAPP_EAGER_MEDIA_CACHE_MAX_BYTES"))
+	if raw == "" {
+		return defaultEagerMediaCacheMaxBytes
+	}
+	value, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || value == 0 {
+		return defaultEagerMediaCacheMaxBytes
+	}
+	return value
+}
+
+func mediaDownloadMaxBytes() uint64 {
+	raw := strings.TrimSpace(os.Getenv("WHATSAPP_MEDIA_DOWNLOAD_MAX_BYTES"))
+	if raw == "" {
+		return defaultMediaDownloadMaxBytes
+	}
+	value, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || value == 0 {
+		return defaultMediaDownloadMaxBytes
+	}
+	return value
+}
+
+func mediaCacheHasCapacity(root string, incomingBytes, maxBytes uint64) (bool, error) {
+	if incomingBytes > maxBytes {
+		return false, nil
+	}
+
+	root = filepath.Clean(root)
+	var usedBytes uint64
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Dir(path) == root || !entry.Type().IsRegular() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		usedBytes += uint64(info.Size())
+		return nil
+	})
+	if os.IsNotExist(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return usedBytes <= maxBytes-incomingBytes, nil
+}
+
+type mediaCacheReservations struct {
+	mu    sync.Mutex
+	bytes uint64
+}
+
+func (reservations *mediaCacheReservations) reserve(
+	root string,
+	incomingBytes uint64,
+	maxBytes uint64,
+) (release func(), ok bool, err error) {
+	reservations.mu.Lock()
+	defer reservations.mu.Unlock()
+
+	if incomingBytes > maxBytes || reservations.bytes > maxBytes-incomingBytes {
+		return func() {}, false, nil
+	}
+	reservedAndIncoming := reservations.bytes + incomingBytes
+	hasCapacity, err := mediaCacheHasCapacity(root, reservedAndIncoming, maxBytes)
+	if err != nil || !hasCapacity {
+		return func() {}, false, err
+	}
+	reservations.bytes = reservedAndIncoming
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			reservations.mu.Lock()
+			reservations.bytes -= incomingBytes
+			reservations.mu.Unlock()
+		})
+	}, true, nil
+}
+
+func sanitizeMediaFilename(filename string) string {
+	base := filepath.Base(strings.ReplaceAll(filename, "\\", "/"))
+	if base == "" || base == "." || base == ".." || base == string(filepath.Separator) {
+		return "media"
+	}
+	return base
+}
+
+func uniqueMediaFilename(messageID, filename string) string {
+	return sanitizeMediaFilename(messageID) + "-" + sanitizeMediaFilename(filename)
+}
+
+func chatMediaDirectory(root, chatJID string) string {
+	name := sanitizeMediaFilename(strings.ReplaceAll(chatJID, ":", "_"))
+	return filepath.Join(root, name)
+}
+
+func scheduleEagerMediaDownload(
+	enabled bool,
+	mediaType string,
+	fileLength uint64,
+	maxBytes uint64,
+	slots chan struct{},
+	download func() error,
+	onError func(error),
+) bool {
+	if !enabled || mediaType == "" || fileLength == 0 || fileLength > maxBytes || download == nil {
+		return false
+	}
+
+	select {
+	case slots <- struct{}{}:
+	default:
+		return false
+	}
+
+	go func() {
+		defer func() { <-slots }()
+		if err := download(); err != nil && onError != nil {
+			onError(err)
+		}
+	}()
+	return true
+}
+
 // Handle regular incoming messages with media support
 func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *events.Message, logger waLog.Logger) {
 	// Save message to database
 	chatJID := msg.Info.Chat.String()
+	messageID := msg.Info.ID
 	sender := msg.Info.Sender.User
 
 	// Get appropriate chat name (pass nil for conversation since we don't have one for regular messages)
@@ -540,6 +705,9 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 
 	// Extract media info
 	mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength := extractMediaInfo(msg.Message)
+	if mediaType != "" {
+		filename = uniqueMediaFilename(messageID, filename)
+	}
 
 	// Skip if there's no content and no media
 	if content == "" && mediaType == "" {
@@ -548,7 +716,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 
 	// Store message in database
 	err = messageStore.StoreMessage(
-		msg.Info.ID,
+		messageID,
 		chatJID,
 		sender,
 		content,
@@ -578,6 +746,56 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 			fmt.Printf("[%s] %s %s: [%s: %s] %s\n", timestamp, direction, sender, mediaType, filename, content)
 		} else if content != "" {
 			fmt.Printf("[%s] %s %s: %s\n", timestamp, direction, sender, content)
+		}
+
+		if !msg.Info.IsFromMe && mediaType != "" {
+			eagerEnabled := eagerMediaDownloadEnabled()
+			scheduled := scheduleEagerMediaDownload(
+				eagerEnabled,
+				mediaType,
+				fileLength,
+				eagerMediaMaxBytes(),
+				eagerMediaDownloadSlots,
+				func() error {
+					release, reserved, err := eagerMediaCacheReservations.reserve(
+						"store",
+						fileLength,
+						eagerMediaCacheMaxBytes(),
+					)
+					if err != nil {
+						return fmt.Errorf("reserve media cache capacity: %w", err)
+					}
+					if !reserved {
+						return fmt.Errorf("media cache capacity exceeded")
+					}
+					defer release()
+					success, _, _, _, err := downloadMedia(
+						client,
+						messageStore,
+						messageID,
+						chatJID,
+						eagerMediaMaxBytes(),
+					)
+					if err != nil {
+						return err
+					}
+					if !success {
+						return fmt.Errorf("media download did not succeed")
+					}
+					return nil
+				},
+				func(err error) {
+					logger.Warnf("Failed to cache %s media for message %s: %v", mediaType, messageID, err)
+				},
+			)
+			if eagerEnabled && !scheduled {
+				logger.Warnf(
+					"Skipped eager %s media cache for message %s: size=%d or workers busy",
+					mediaType,
+					messageID,
+					fileLength,
+				)
+			}
 		}
 	}
 }
@@ -665,8 +883,115 @@ func (d *MediaDownloader) GetMediaType() whatsmeow.MediaType {
 	return d.MediaType
 }
 
+var errMediaTooLarge = errors.New("media exceeds configured download limit")
+
+type sizeLimitedFile struct {
+	File     *os.File
+	maxBytes int64
+}
+
+func (file *sizeLimitedFile) Read(p []byte) (int, error) {
+	return file.File.Read(p)
+}
+
+func (file *sizeLimitedFile) Write(p []byte) (int, error) {
+	offset, err := file.File.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, err
+	}
+	if offset < 0 || int64(len(p)) > file.maxBytes-offset {
+		return 0, errMediaTooLarge
+	}
+	return file.File.Write(p)
+}
+
+func (file *sizeLimitedFile) Seek(offset int64, whence int) (int64, error) {
+	return file.File.Seek(offset, whence)
+}
+
+func (file *sizeLimitedFile) ReadAt(p []byte, offset int64) (int, error) {
+	return file.File.ReadAt(p, offset)
+}
+
+func (file *sizeLimitedFile) WriteAt(p []byte, offset int64) (int, error) {
+	if offset < 0 || int64(len(p)) > file.maxBytes-offset {
+		return 0, errMediaTooLarge
+	}
+	return file.File.WriteAt(p, offset)
+}
+
+func (file *sizeLimitedFile) Truncate(size int64) error {
+	if size < 0 || size > file.maxBytes {
+		return errMediaTooLarge
+	}
+	return file.File.Truncate(size)
+}
+
+func (file *sizeLimitedFile) Stat() (os.FileInfo, error) {
+	return file.File.Stat()
+}
+
+func downloadMediaToFile(
+	ctx context.Context,
+	client *whatsmeow.Client,
+	downloader *MediaDownloader,
+	path string,
+	expectedBytes uint64,
+	maxBytes uint64,
+) (err error) {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".whatsapp-media-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() {
+		_ = temporary.Close()
+		if err != nil {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+
+	if err = temporary.Chmod(0o600); err != nil {
+		return err
+	}
+	limitedBytes := maxBytes
+	if limitedBytes <= ^uint64(0)-mediaEncryptionOverheadLimit {
+		limitedBytes += mediaEncryptionOverheadLimit
+	}
+	maxInt64 := uint64(^uint64(0) >> 1)
+	if limitedBytes > maxInt64 {
+		limitedBytes = maxInt64
+	}
+	limited := &sizeLimitedFile{File: temporary, maxBytes: int64(limitedBytes)}
+	if err = client.DownloadToFile(ctx, downloader, limited); err != nil {
+		return err
+	}
+	info, err := temporary.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() < 0 || uint64(info.Size()) != expectedBytes || uint64(info.Size()) > maxBytes {
+		return fmt.Errorf(
+			"downloaded media size %d does not match expected size %d: %w",
+			info.Size(),
+			expectedBytes,
+			errMediaTooLarge,
+		)
+	}
+	if err = temporary.Sync(); err != nil {
+		return err
+	}
+	if err = temporary.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(temporaryPath, path); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
+}
+
 // Function to download media from a message
-func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, messageID, chatJID string) (bool, string, string, string, error) {
+func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, messageID, chatJID string, maxBytes uint64) (bool, string, string, string, error) {
 	// Query the database for the message
 	var mediaType, filename, url string
 	var mediaKey, fileSHA256, fileEncSHA256 []byte
@@ -674,7 +999,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	var err error
 
 	// First, check if we already have this file
-	chatDir := fmt.Sprintf("store/%s", strings.ReplaceAll(chatJID, ":", "_"))
+	chatDir := chatMediaDirectory("store", chatJID)
 	localPath := ""
 
 	// Get media info from the database
@@ -698,12 +1023,16 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	}
 
 	// Create directory for the chat if it doesn't exist
-	if err := os.MkdirAll(chatDir, 0755); err != nil {
+	if err := os.MkdirAll(chatDir, 0o700); err != nil {
 		return false, "", "", "", fmt.Errorf("failed to create chat directory: %v", err)
+	}
+	if err := os.Chmod(chatDir, 0o700); err != nil {
+		return false, "", "", "", fmt.Errorf("failed to secure chat directory: %v", err)
 	}
 
 	// Generate a local path for the file
-	localPath = fmt.Sprintf("%s/%s", chatDir, filename)
+	filename = sanitizeMediaFilename(filename)
+	localPath = filepath.Join(chatDir, filename)
 
 	// Get absolute path
 	absPath, err := filepath.Abs(localPath)
@@ -720,6 +1049,9 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	// If we don't have all the media info we need, we can't download
 	if url == "" || len(mediaKey) == 0 || len(fileSHA256) == 0 || len(fileEncSHA256) == 0 || fileLength == 0 {
 		return false, "", "", "", fmt.Errorf("incomplete media information for download")
+	}
+	if fileLength > maxBytes {
+		return false, "", "", "", fmt.Errorf("declared media size %d exceeds limit %d: %w", fileLength, maxBytes, errMediaTooLarge)
 	}
 
 	fmt.Printf("Attempting to download media for message %s in chat %s...\n", messageID, chatJID)
@@ -752,39 +1084,34 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 		MediaType:     waMediaType,
 	}
 
-	// Download the media using whatsmeow client
-	mediaData, err := client.Download(context.Background(), downloader)
-	if err != nil {
+	// Stream through a bounded temporary file so sender-controlled metadata
+	// cannot force an unbounded in-memory allocation. Rename only after
+	// whatsmeow verifies the hashes and we verify the plaintext size.
+	if err := downloadMediaToFile(
+		context.Background(),
+		client,
+		downloader,
+		localPath,
+		fileLength,
+		maxBytes,
+	); err != nil {
 		return false, "", "", "", fmt.Errorf("failed to download media: %v", err)
 	}
 
-	// Save the downloaded media to file
-	if err := os.WriteFile(localPath, mediaData, 0644); err != nil {
-		return false, "", "", "", fmt.Errorf("failed to save media file: %v", err)
-	}
-
-	fmt.Printf("Successfully downloaded %s media to %s (%d bytes)\n", mediaType, absPath, len(mediaData))
+	fmt.Printf("Successfully downloaded %s media to %s (%d bytes)\n", mediaType, absPath, fileLength)
 	return true, mediaType, filename, absPath, nil
 }
 
 // Extract direct path from a WhatsApp media URL
 func extractDirectPathFromURL(url string) string {
-	// The direct path is typically in the URL, we need to extract it
-	// Example URL: https://mmg.whatsapp.net/v/t62.7118-24/13812002_698058036224062_3424455886509161511_n.enc?ccb=11-4&oh=...
-
-	// Find the path part after the domain
+	// The direct path includes WhatsApp's signed query parameters. Dropping
+	// them makes DownloadMediaWithPath build an invalid CDN request (HTTP 403).
+	// Example URL: https://mmg.whatsapp.net/v/t62.7118-24/file.enc?ccb=11-4&oh=...
 	parts := strings.SplitN(url, ".net/", 2)
 	if len(parts) < 2 {
 		return url // Return original URL if parsing fails
 	}
-
-	pathPart := parts[1]
-
-	// Remove query parameters
-	pathPart = strings.SplitN(pathPart, "?", 2)[0]
-
-	// Create proper direct path format
-	return "/" + pathPart
+	return "/" + parts[1]
 }
 
 // GetChatsResponse represents the response for the get chats API
@@ -876,7 +1203,13 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		}
 
 		// Download the media
-		success, mediaType, filename, path, err := downloadMedia(client, messageStore, req.MessageID, req.ChatJID)
+		success, mediaType, filename, path, err := downloadMedia(
+			client,
+			messageStore,
+			req.MessageID,
+			req.ChatJID,
+			mediaDownloadMaxBytes(),
+		)
 
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
