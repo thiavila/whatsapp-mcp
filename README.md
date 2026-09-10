@@ -29,6 +29,7 @@ The original project and contributors remain credited through the Git history an
 - Search contacts, chats, and message history.
 - Read text and media metadata with surrounding context.
 - Download and transcribe received voice notes locally with Parakeet.
+- Optionally cache received media as it arrives, before WhatsApp CDN links expire.
 - Send text, files, voice notes, reactions, polls, and typing indicators.
 - Edit or delete messages and send read receipts.
 - Manage groups, invite links, participants, profile information, privacy settings, blocks, and business labels.
@@ -84,6 +85,28 @@ go run .
 On the first run, scan the QR code from **WhatsApp > Settings > Linked devices > Link a device**. Keep this process running.
 
 The bridge creates `whatsapp-bridge/store/` containing the paired-device session, messages, and downloaded media. This directory is ignored by Git. Treat it as sensitive and never publish or share it.
+
+To cache incoming images, videos, audio, and documents immediately, start the
+bridge with:
+
+```bash
+WHATSAPP_EAGER_MEDIA_DOWNLOAD=true go run .
+```
+
+Eager caching is disabled by default because it increases local disk usage and
+retains message attachments that would otherwise be downloaded only on demand.
+The bridge limits eager downloads to two concurrent files, skips files larger
+than 64 MiB, and stops eager caching when chat-media files reach 2 GiB in total.
+On-demand downloads are streamed to a temporary file and limited to 512 MiB by
+default. Override the limits in bytes when needed:
+
+```bash
+WHATSAPP_EAGER_MEDIA_DOWNLOAD=true \
+WHATSAPP_EAGER_MEDIA_MAX_BYTES=134217728 \
+WHATSAPP_EAGER_MEDIA_CACHE_MAX_BYTES=4294967296 \
+WHATSAPP_MEDIA_DOWNLOAD_MAX_BYTES=1073741824 \
+go run .
+```
 
 ### 3. Add the MCP server to your client
 
@@ -170,7 +193,7 @@ If compilation reports that `go-sqlite3 requires cgo`, verify that the MSYS2 `uc
 - Message history and unread metadata are stored in `whatsapp-bridge/store/messages.db`.
 - Downloaded media is stored under per-chat directories inside `whatsapp-bridge/store/`.
 - The bridge REST API listens only on `127.0.0.1:8080`; it is not intentionally exposed to the LAN.
-- Data remains local until an MCP client requests it. Requested messages, contact data, or media may then be included in the AI provider's context according to that client's configuration and privacy policy.
+- Message metadata remains local. Attachments are downloaded on demand by default, or saved on arrival when eager media caching is enabled. Requested messages, contact data, or media may then be included in the AI provider's context according to that client's configuration and privacy policy.
 
 Back up the store directory if local history matters to you. Deleting it removes the local session and message database and requires pairing again.
 
