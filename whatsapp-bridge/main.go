@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"math/rand"
+	"mime"
 	"net/http"
 	"os"
 	"os/signal"
@@ -394,7 +395,13 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 		// Document types (for any other file type)
 		default:
 			mediaType = whatsmeow.MediaDocument
-			mimeType = "application/octet-stream"
+			// Clients decide whether a document can be previewed from its mime type:
+			// application/octet-stream renders as an unopenable blob, so derive the
+			// real type from the extension and only fall back when it is unknown.
+			mimeType = mime.TypeByExtension("." + fileExt)
+			if mimeType == "" {
+				mimeType = "application/octet-stream"
+			}
 		}
 
 		// Upload media to WhatsApp servers
@@ -460,8 +467,12 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 				FileLength:    &resp.FileLength,
 			}
 		case whatsmeow.MediaDocument:
+			// FileName is what clients display and use to name the saved file;
+			// without it the document shows up as "untitled".
+			fileName := filepath.Base(mediaPath)
 			msg.DocumentMessage = &waProto.DocumentMessage{
-				Title:         proto.String(mediaPath[strings.LastIndex(mediaPath, "/")+1:]),
+				Title:         proto.String(fileName),
+				FileName:      proto.String(fileName),
 				Caption:       proto.String(message),
 				Mimetype:      proto.String(mimeType),
 				URL:           &resp.URL,
