@@ -313,36 +313,121 @@ type SendMessageResponse struct {
 
 // SendMessageRequest represents the request body for the send message API
 type SendMessageRequest struct {
-	Recipient string `json:"recipient"`
-	Message   string `json:"message"`
-	MediaPath string `json:"media_path,omitempty"`
+	Recipient        string `json:"recipient"`
+	Message          string `json:"message"`
+	MediaPath        string `json:"media_path,omitempty"`
+	ReplyToMessageID string `json:"reply_to_message_id,omitempty"`
+	ReplyToSender    string `json:"-"`
+	ReplyToMediaType string `json:"-"`
+	ReplyToContent   string `json:"-"`
+}
+
+type ReplyContext struct {
+	Sender    string
+	Content   string
+	MediaType string
+	Filename  string
+}
+
+func parseRecipientJID(recipient string) (types.JID, error) {
+	if strings.Contains(recipient, "@") {
+		jid, err := types.ParseJID(recipient)
+		if err != nil {
+			return types.EmptyJID, err
+		}
+		return jid.ToNonAD(), nil
+	}
+	return types.NewJID(recipient, types.DefaultUserServer), nil
+}
+
+func replyChatCandidates(client *whatsmeow.Client, recipient types.JID) []string {
+	candidates := []string{recipient.String()}
+	ctx := context.Background()
+	switch recipient.Server {
+	case types.DefaultUserServer:
+		if lid, err := client.Store.LIDs.GetLIDForPN(ctx, recipient); err == nil && !lid.IsEmpty() {
+			candidates = append(candidates, lid.ToNonAD().String())
+		}
+	case types.HiddenUserServer:
+		if pn, err := client.Store.LIDs.GetPNForLID(ctx, recipient); err == nil && !pn.IsEmpty() {
+			candidates = append(candidates, pn.ToNonAD().String())
+		}
+	}
+	return candidates
+}
+
+func (store *MessageStore) GetReplyContext(messageID, chatJID string) (ReplyContext, error) {
+	var reply ReplyContext
+	err := store.db.QueryRow(
+		"SELECT sender, content, media_type, filename FROM messages WHERE id = ? AND chat_jid = ?",
+		messageID,
+		chatJID,
+	).Scan(&reply.Sender, &reply.Content, &reply.MediaType, &reply.Filename)
+	return reply, err
+}
+
+func resolveStoredSenderJID(client *whatsmeow.Client, sender string) (string, error) {
+	if strings.Contains(sender, "@") {
+		jid, err := types.ParseJID(sender)
+		if err != nil {
+			return "", err
+		}
+		return jid.ToNonAD().String(), nil
+	}
+
+	// Historical rows store only the user part. Prefer LID when the device store
+	// knows that mapping; otherwise fall back to a regular phone-number JID.
+	lid := types.NewJID(sender, types.HiddenUserServer)
+	if pn, err := client.Store.LIDs.GetPNForLID(context.Background(), lid); err == nil && !pn.IsEmpty() {
+		return lid.String(), nil
+	}
+	return types.NewJID(sender, types.DefaultUserServer).String(), nil
+}
+
+func buildOutgoingMessage(req SendMessageRequest) *waProto.Message {
+	if req.ReplyToMessageID == "" {
+		return &waProto.Message{Conversation: proto.String(req.Message)}
+	}
+
+	quoted := &waProto.Message{}
+	switch req.ReplyToMediaType {
+	case "image":
+		quoted.ImageMessage = &waProto.ImageMessage{Mimetype: proto.String("image/jpeg")}
+	case "video":
+		quoted.VideoMessage = &waProto.VideoMessage{Mimetype: proto.String("video/mp4")}
+	case "audio":
+		quoted.AudioMessage = &waProto.AudioMessage{Mimetype: proto.String("audio/ogg; codecs=opus")}
+	case "document":
+		quoted.DocumentMessage = &waProto.DocumentMessage{Title: proto.String(req.ReplyToContent)}
+	default:
+		quoted.Conversation = proto.String(req.ReplyToContent)
+	}
+
+	return &waProto.Message{
+		ExtendedTextMessage: &waProto.ExtendedTextMessage{
+			Text: proto.String(req.Message),
+			ContextInfo: &waProto.ContextInfo{
+				StanzaID:      proto.String(req.ReplyToMessageID),
+				Participant:   proto.String(req.ReplyToSender),
+				QuotedMessage: quoted,
+				RemoteJID:     proto.String(req.Recipient),
+			},
+		},
+	}
 }
 
 // Function to send a WhatsApp message
-func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message string, mediaPath string) (bool, string) {
+func sendWhatsAppMessage(client *whatsmeow.Client, req SendMessageRequest) (bool, string) {
 	if !client.IsConnected() {
 		return false, "Not connected to WhatsApp"
 	}
+	recipient := req.Recipient
+	message := req.Message
+	mediaPath := req.MediaPath
 
-	// Create JID for recipient
-	var recipientJID types.JID
-	var err error
-
-	// Check if recipient is a JID
-	isJID := strings.Contains(recipient, "@")
-
-	if isJID {
-		// Parse the JID string
-		recipientJID, err = types.ParseJID(recipient)
-		if err != nil {
-			return false, fmt.Sprintf("Error parsing JID: %v", err)
-		}
-	} else {
-		// Create JID from phone number
-		recipientJID = types.JID{
-			User:   recipient,
-			Server: "s.whatsapp.net", // For personal chats
-		}
+	recipientJID, err := parseRecipientJID(recipient)
+	if err != nil {
+		return false, fmt.Sprintf("Error parsing JID: %v", err)
 	}
 
 	msg := &waProto.Message{}
@@ -484,7 +569,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 			}
 		}
 	} else {
-		msg.Conversation = proto.String(message)
+		msg = buildOutgoingMessage(req)
 	}
 
 	// Send message
@@ -1171,11 +1256,47 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			http.Error(w, "Message or media path is required", http.StatusBadRequest)
 			return
 		}
+		if req.ReplyToMessageID != "" {
+			recipientJID, err := parseRecipientJID(req.Recipient)
+			if err != nil {
+				http.Error(w, "Invalid recipient", http.StatusBadRequest)
+				return
+			}
+
+			var reply ReplyContext
+			var matchedChatJID string
+			for _, candidate := range replyChatCandidates(client, recipientJID) {
+				reply, err = messageStore.GetReplyContext(req.ReplyToMessageID, candidate)
+				if err == nil {
+					matchedChatJID = candidate
+					break
+				}
+				if !errors.Is(err, sql.ErrNoRows) {
+					break
+				}
+			}
+			if err != nil || matchedChatJID == "" {
+				http.Error(w, "Quoted message not found in recipient chat", http.StatusBadRequest)
+				return
+			}
+			senderJID, err := resolveStoredSenderJID(client, reply.Sender)
+			if err != nil {
+				http.Error(w, "Invalid quoted message sender", http.StatusBadRequest)
+				return
+			}
+			req.Recipient = matchedChatJID
+			req.ReplyToSender = senderJID
+			req.ReplyToMediaType = reply.MediaType
+			req.ReplyToContent = reply.Content
+			if req.ReplyToContent == "" && reply.MediaType == "document" {
+				req.ReplyToContent = reply.Filename
+			}
+		}
 
 		fmt.Println("Received request to send message", req.Message, req.MediaPath)
 
 		// Send the message
-		success, message := sendWhatsAppMessage(client, req.Recipient, req.Message, req.MediaPath)
+		success, message := sendWhatsAppMessage(client, req)
 		fmt.Println("Message sent", success, message)
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")

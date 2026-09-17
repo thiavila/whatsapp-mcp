@@ -1,12 +1,111 @@
 package main
 
 import (
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestParseRecipientJIDCanonicalizesPhoneNumber(t *testing.T) {
+	jid, err := parseRecipientJID("559881212573")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := jid.String(), "559881212573@s.whatsapp.net"; got != want {
+		t.Fatalf("recipient JID = %q, want %q", got, want)
+	}
+}
+
+func TestReplyMetadataCannotBeInjectedThroughJSON(t *testing.T) {
+	var req SendMessageRequest
+	err := json.Unmarshal([]byte(`{
+		"recipient":"120363430688593294@g.us",
+		"message":"hello",
+		"reply_to_message_id":"ABC",
+		"reply_to_sender":"forged@lid",
+		"reply_to_media_type":"image",
+		"reply_to_content":"forged"
+	}`), &req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.ReplyToMessageID != "ABC" {
+		t.Fatalf("reply id = %q, want ABC", req.ReplyToMessageID)
+	}
+	if req.ReplyToSender != "" || req.ReplyToMediaType != "" || req.ReplyToContent != "" {
+		t.Fatal("reply metadata must come from the message store, not client JSON")
+	}
+}
+
+func TestGetReplyContextIsScopedToRecipientChat(t *testing.T) {
+	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "messages.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	_, err = db.Exec(`CREATE TABLE messages (
+		id TEXT, chat_jid TEXT, sender TEXT, content TEXT,
+		media_type TEXT, filename TEXT,
+		PRIMARY KEY (id, chat_jid)
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(
+		"INSERT INTO messages (id, chat_jid, sender, content, media_type, filename) VALUES (?, ?, ?, ?, ?, ?)",
+		"ABC", "target@g.us", "141536503300224", "", "image", "photo.jpg",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &MessageStore{db: db}
+
+	context, err := store.GetReplyContext("ABC", "target@g.us")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if context.Sender != "141536503300224" || context.MediaType != "image" || context.Content != "" {
+		t.Fatalf("unexpected reply context: %+v", context)
+	}
+	if _, err := store.GetReplyContext("ABC", "other@g.us"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("wrong-chat lookup error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestBuildOutgoingMessageQuotesImage(t *testing.T) {
+	req := SendMessageRequest{
+		Message:          "corrigimos o problema",
+		ReplyToMessageID: "AC668AAC2DF5547FD6A833FBC2147B16",
+		ReplyToSender:    "141536503300224@lid",
+		ReplyToMediaType: "image",
+	}
+
+	msg := buildOutgoingMessage(req)
+	extended := msg.GetExtendedTextMessage()
+	if extended == nil {
+		t.Fatal("expected an extended text message for a quoted reply")
+	}
+	if got, want := extended.GetText(), req.Message; got != want {
+		t.Fatalf("text = %q, want %q", got, want)
+	}
+	context := extended.GetContextInfo()
+	if context == nil {
+		t.Fatal("expected quoted reply context")
+	}
+	if got, want := context.GetStanzaID(), req.ReplyToMessageID; got != want {
+		t.Fatalf("stanza id = %q, want %q", got, want)
+	}
+	if got, want := context.GetParticipant(), req.ReplyToSender; got != want {
+		t.Fatalf("participant = %q, want %q", got, want)
+	}
+	if context.GetQuotedMessage().GetImageMessage() == nil {
+		t.Fatal("expected quoted image metadata")
+	}
+}
 
 func TestExtractDirectPathFromURLPreservesWhatsAppQuery(t *testing.T) {
 	input := "https://mmg.whatsapp.net/v/t62.7161-24/video.enc?ccb=11-4&oh=token&oe=expiry&mms3=true"

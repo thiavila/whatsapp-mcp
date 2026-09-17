@@ -199,6 +199,7 @@ def send_message(
     recipient: str,
     message: str,
     show_typing: bool = True,
+    reply_to_message_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Send a WhatsApp message to a person or group with a natural typing delay.
 
@@ -207,6 +208,7 @@ def send_message(
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
         message: The message text to send
         show_typing: Show a length-based, randomized typing indicator before sending (default True)
+        reply_to_message_id: Optional WhatsApp message ID to quote in the reply
     
     Returns:
         A dictionary containing success status and a status message
@@ -219,7 +221,12 @@ def send_message(
         }
     
     # Call the whatsapp_send_message function with the unified recipient parameter
-    success, status_message = whatsapp_send_message(recipient, message, show_typing)
+    success, status_message = whatsapp_send_message(
+        recipient,
+        message,
+        show_typing,
+        reply_to_message_id=reply_to_message_id,
+    )
     return {
         "success": success,
         "message": status_message
