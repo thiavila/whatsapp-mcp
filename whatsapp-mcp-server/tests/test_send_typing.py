@@ -65,6 +65,35 @@ class SendTypingTests(unittest.TestCase):
     @patch("whatsapp.send_typing_indicator")
     @patch("whatsapp.resolve_chat_identity")
     @patch("whatsapp.requests.post")
+    def test_send_message_forwards_quoted_reply_context(
+        self, post, resolve_identity, typing, sleep
+    ):
+        resolve_identity.return_value = MagicMock(canonical_jid="120363430688593294@g.us")
+        typing.return_value = (True, "Presence sent")
+        post.return_value.status_code = 200
+        post.return_value.json.return_value = {"success": True, "message": "sent"}
+
+        result = whatsapp.send_message(
+            "120363430688593294@g.us",
+            "corrigimos o problema",
+            reply_to_message_id="AC668AAC2DF5547FD6A833FBC2147B16",
+        )
+
+        self.assertEqual(result, (True, "sent"))
+        self.assertEqual(
+            post.call_args.kwargs["json"],
+            {
+                "recipient": "120363430688593294@g.us",
+                "message": "corrigimos o problema",
+                "reply_to_message_id": "AC668AAC2DF5547FD6A833FBC2147B16",
+            },
+        )
+        sleep.assert_called_once()
+
+    @patch("whatsapp.time.sleep")
+    @patch("whatsapp.send_typing_indicator")
+    @patch("whatsapp.resolve_chat_identity")
+    @patch("whatsapp.requests.post")
     def test_typing_is_cleared_when_send_fails(
         self, post, resolve_identity, typing, sleep
     ):

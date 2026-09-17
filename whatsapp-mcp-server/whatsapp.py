@@ -801,7 +801,11 @@ def _typing_delay_seconds(message: str) -> float:
 
 
 def send_message(
-    recipient: str, message: str, show_typing: bool = True
+    recipient: str,
+    message: str,
+    show_typing: bool = True,
+    *,
+    reply_to_message_id: Optional[str] = None,
 ) -> Tuple[bool, str]:
     typing_jid = None
     typing_started = False
@@ -821,6 +825,8 @@ def send_message(
             "recipient": recipient,
             "message": message,
         }
+        if reply_to_message_id:
+            payload["reply_to_message_id"] = reply_to_message_id
         
         response = requests.post(url, json=payload)
         
