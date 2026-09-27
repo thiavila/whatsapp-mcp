@@ -99,8 +99,8 @@ type ResolveBusinessLinkResponse struct {
 
 // --- HTTP handlers ---
 
-func registerContactRoutes(client *whatsmeow.Client) {
-	http.HandleFunc("/api/users/info", func(w http.ResponseWriter, r *http.Request) {
+func registerContactRoutes(mux *http.ServeMux, client *whatsmeow.Client) {
+	mux.HandleFunc("/api/users/info", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, UserInfoResponse{Success: false, Message: "Method not allowed"})
@@ -142,7 +142,7 @@ func registerContactRoutes(client *whatsmeow.Client) {
 		writeJSON(http.StatusOK, UserInfoResponse{Success: true, Users: out})
 	})
 
-	http.HandleFunc("/api/users/profile-picture", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/users/profile-picture", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, ProfilePictureResponse{Success: false, Message: "Method not allowed"})
@@ -175,7 +175,7 @@ func registerContactRoutes(client *whatsmeow.Client) {
 		})
 	})
 
-	http.HandleFunc("/api/users/business-profile", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/users/business-profile", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, BusinessProfileResponse{Success: false, Message: "Method not allowed"})
@@ -213,7 +213,7 @@ func registerContactRoutes(client *whatsmeow.Client) {
 		writeJSON(http.StatusOK, BusinessProfileResponse{Success: true, Profile: dto})
 	})
 
-	http.HandleFunc("/api/users/blocklist", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/users/blocklist", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodGet {
 			writeJSON(http.StatusMethodNotAllowed, BlocklistResponse{Success: false, Message: "Method not allowed"})
@@ -231,7 +231,7 @@ func registerContactRoutes(client *whatsmeow.Client) {
 		writeJSON(http.StatusOK, BlocklistResponse{Success: true, JIDs: jids})
 	})
 
-	http.HandleFunc("/api/users/block", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/users/block", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, GenericResponse{Success: false, Message: "Method not allowed"})
@@ -262,7 +262,7 @@ func registerContactRoutes(client *whatsmeow.Client) {
 		writeJSON(http.StatusOK, GenericResponse{Success: true, Message: fmt.Sprintf("%s %s", verb, req.JID)})
 	})
 
-	http.HandleFunc("/api/users/status-message", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/users/status-message", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, GenericResponse{Success: false, Message: "Method not allowed"})
@@ -280,7 +280,7 @@ func registerContactRoutes(client *whatsmeow.Client) {
 		writeJSON(http.StatusOK, GenericResponse{Success: true, Message: "Status updated"})
 	})
 
-	http.HandleFunc("/api/users/privacy", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/users/privacy", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, GenericResponse{Success: false, Message: "Method not allowed"})
@@ -302,7 +302,7 @@ func registerContactRoutes(client *whatsmeow.Client) {
 		writeJSON(http.StatusOK, GenericResponse{Success: true, Message: fmt.Sprintf("Privacy setting %s=%s saved", req.SettingType, req.Value)})
 	})
 
-	http.HandleFunc("/api/users/resolve-business-link", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/users/resolve-business-link", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, ResolveBusinessLinkResponse{Success: false, Message: "Method not allowed"})

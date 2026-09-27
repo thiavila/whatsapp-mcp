@@ -49,7 +49,7 @@ func TestGetReplyContextIsScopedToRecipientChat(t *testing.T) {
 	defer db.Close()
 	_, err = db.Exec(`CREATE TABLE messages (
 		id TEXT, chat_jid TEXT, sender TEXT, content TEXT,
-		media_type TEXT, filename TEXT,
+		media_type TEXT, filename TEXT, sender_jid TEXT,
 		PRIMARY KEY (id, chat_jid)
 	)`)
 	if err != nil {

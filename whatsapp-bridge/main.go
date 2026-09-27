@@ -6,11 +6,13 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"math"
 	"math/rand"
 	"mime"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -29,6 +31,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -50,6 +53,8 @@ type Message struct {
 // Database handler for storing message history
 type MessageStore struct {
 	db *sql.DB
+	// dir holds messages.db and the per-chat media cache (BR-2).
+	dir string
 }
 
 const (
@@ -72,15 +77,20 @@ type Chat struct {
 	UnreadCount int32
 }
 
-// Initialize message store
-func NewMessageStore() (*MessageStore, error) {
+// sqliteDSN builds a go-sqlite3 DSN for a database file inside dir.
+func sqliteDSN(dir, name string) string {
+	return "file:" + filepath.Join(dir, name) + "?_foreign_keys=on"
+}
+
+// Initialize message store in dir (the historical default is "store").
+func NewMessageStore(dir string) (*MessageStore, error) {
 	// Create directory for database if it doesn't exist
-	if err := os.MkdirAll("store", 0755); err != nil {
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create store directory: %v", err)
 	}
 
 	// Open SQLite database for messages
-	db, err := sql.Open("sqlite3", "file:store/messages.db?_foreign_keys=on")
+	db, err := sql.Open("sqlite3", sqliteDSN(dir, "messages.db"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open message database: %v", err)
 	}
@@ -118,67 +128,21 @@ func NewMessageStore() (*MessageStore, error) {
 		return nil, fmt.Errorf("failed to create tables: %v", err)
 	}
 
-	// Lightweight migration: ALTER TABLE ADD COLUMN is a no-op when the
-	// column already exists, but SQLite errors out instead of being silent.
-	// Probe with PRAGMA table_info and only ALTER when missing, so DBs
-	// created against the pre-unread schema upgrade cleanly on first run.
-	if err := migrateUnreadColumns(db); err != nil {
+	// Lightweight migration: ALTER TABLE ADD COLUMN errors out when the
+	// column already exists, so probe with PRAGMA table_info and only ALTER
+	// when missing. DBs created by older bridges (pre-unread, pre-BR-4
+	// metadata) upgrade in place on first run; see migrateMessageSchema.
+	if err := migrateMessageSchema(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to migrate schema: %v", err)
 	}
 
-	store := &MessageStore{db: db}
+	store := &MessageStore{db: db, dir: dir}
 	if err := migrateLabelTables(store); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to migrate label tables: %v", err)
 	}
 	return store, nil
-}
-
-// migrateUnreadColumns adds chats.unread_count and messages.is_read to
-// databases that pre-date the unread-tracking feature.
-func migrateUnreadColumns(db *sql.DB) error {
-	hasColumn := func(table, column string) (bool, error) {
-		rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
-		if err != nil {
-			return false, err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var cid int
-			var name, ctype string
-			var notnull, pk int
-			var dflt sql.NullString
-			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-				return false, err
-			}
-			if name == column {
-				return true, nil
-			}
-		}
-		return false, nil
-	}
-
-	has, err := hasColumn("chats", "unread_count")
-	if err != nil {
-		return err
-	}
-	if !has {
-		if _, err := db.Exec("ALTER TABLE chats ADD COLUMN unread_count INTEGER DEFAULT 0"); err != nil {
-			return fmt.Errorf("add chats.unread_count: %v", err)
-		}
-	}
-
-	has, err = hasColumn("messages", "is_read")
-	if err != nil {
-		return err
-	}
-	if !has {
-		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN is_read BOOLEAN DEFAULT FALSE"); err != nil {
-			return fmt.Errorf("add messages.is_read: %v", err)
-		}
-	}
-	return nil
 }
 
 // Close the database connection
@@ -197,19 +161,46 @@ func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time
 	return err
 }
 
-// Store a message in the database
+// Store a message in the database.
+//
+// Re-storing an existing (id, chat_jid) refreshes the legacy columns like the
+// old INSERT OR REPLACE did, but it never erases metadata already known
+// (sender_jid, push_name, ...), never clears edited_at/revoked_at and never
+// replaces the original content of a message that has been edited (BR-5).
 func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, timestamp time.Time, isFromMe bool,
-	mediaType, filename, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
+	mediaType, filename, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64, meta MessageMeta) error {
 	// Only store if there's actual content or media
 	if content == "" && mediaType == "" {
 		return nil
 	}
 
 	_, err := store.db.Exec(
-		`INSERT OR REPLACE INTO messages 
-		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length, is_read) 
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO messages
+		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length, is_read,
+		 sender_jid, sender_alt_jid, push_name, mentioned_jids, quoted_message_id, is_forwarded)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (id, chat_jid) DO UPDATE SET
+			sender = excluded.sender,
+			content = CASE WHEN messages.edited_at IS NULL THEN excluded.content ELSE messages.content END,
+			timestamp = excluded.timestamp,
+			is_from_me = excluded.is_from_me,
+			media_type = excluded.media_type,
+			filename = excluded.filename,
+			url = excluded.url,
+			media_key = excluded.media_key,
+			file_sha256 = excluded.file_sha256,
+			file_enc_sha256 = excluded.file_enc_sha256,
+			file_length = excluded.file_length,
+			is_read = excluded.is_read,
+			sender_jid = COALESCE(excluded.sender_jid, messages.sender_jid),
+			sender_alt_jid = COALESCE(excluded.sender_alt_jid, messages.sender_alt_jid),
+			push_name = COALESCE(excluded.push_name, messages.push_name),
+			mentioned_jids = COALESCE(excluded.mentioned_jids, messages.mentioned_jids),
+			quoted_message_id = COALESCE(excluded.quoted_message_id, messages.quoted_message_id),
+			is_forwarded = MAX(COALESCE(excluded.is_forwarded, 0), COALESCE(messages.is_forwarded, 0))`,
 		id, chatJID, sender, content, timestamp, isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength, false,
+		nullableString(meta.SenderJID), nullableString(meta.SenderAltJID), nullableString(meta.PushName),
+		meta.mentionedJSON(), nullableString(meta.QuotedMessageID), meta.IsForwarded,
 	)
 	return err
 }
@@ -309,6 +300,11 @@ func extractTextContent(msg *waProto.Message) string {
 type SendMessageResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
+	// MessageID and Timestamp come from the WhatsApp server acknowledgement
+	// (BR-7). They are the evidence that the message was sent and let
+	// callers deduplicate retries.
+	MessageID string `json:"message_id,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
 // SendMessageRequest represents the request body for the send message API
@@ -358,8 +354,9 @@ func replyChatCandidates(client *whatsmeow.Client, recipient types.JID) []string
 
 func (store *MessageStore) GetReplyContext(messageID, chatJID string) (ReplyContext, error) {
 	var reply ReplyContext
+	// Prefer the full sender JID (BR-4) over the legacy user-part column.
 	err := store.db.QueryRow(
-		"SELECT sender, content, media_type, filename FROM messages WHERE id = ? AND chat_jid = ?",
+		"SELECT COALESCE(NULLIF(sender_jid, ''), sender), content, media_type, filename FROM messages WHERE id = ? AND chat_jid = ?",
 		messageID,
 		chatJID,
 	).Scan(&reply.Sender, &reply.Content, &reply.MediaType, &reply.Filename)
@@ -416,10 +413,23 @@ func buildOutgoingMessage(req SendMessageRequest) *waProto.Message {
 	}
 }
 
+// sendResultResponse converts the outcome of a send into the REST payload.
+func sendResultResponse(success bool, message string, resp whatsmeow.SendResponse) SendMessageResponse {
+	out := SendMessageResponse{Success: success, Message: message}
+	if success {
+		out.MessageID = resp.ID
+		if !resp.Timestamp.IsZero() {
+			out.Timestamp = resp.Timestamp.Format(time.RFC3339)
+		}
+	}
+	return out
+}
+
 // Function to send a WhatsApp message
-func sendWhatsAppMessage(client *whatsmeow.Client, req SendMessageRequest) (bool, string) {
+func sendWhatsAppMessage(client *whatsmeow.Client, req SendMessageRequest) (bool, string, whatsmeow.SendResponse) {
+	var noResp whatsmeow.SendResponse
 	if !client.IsConnected() {
-		return false, "Not connected to WhatsApp"
+		return false, "Not connected to WhatsApp", noResp
 	}
 	recipient := req.Recipient
 	message := req.Message
@@ -427,7 +437,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, req SendMessageRequest) (bool
 
 	recipientJID, err := parseRecipientJID(recipient)
 	if err != nil {
-		return false, fmt.Sprintf("Error parsing JID: %v", err)
+		return false, fmt.Sprintf("Error parsing JID: %v", err), noResp
 	}
 
 	msg := &waProto.Message{}
@@ -437,7 +447,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, req SendMessageRequest) (bool
 		// Read media file
 		mediaData, err := os.ReadFile(mediaPath)
 		if err != nil {
-			return false, fmt.Sprintf("Error reading media file: %v", err)
+			return false, fmt.Sprintf("Error reading media file: %v", err), noResp
 		}
 
 		// Determine media type and mime type based on file extension
@@ -492,7 +502,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, req SendMessageRequest) (bool
 		// Upload media to WhatsApp servers
 		resp, err := client.Upload(context.Background(), mediaData, mediaType)
 		if err != nil {
-			return false, fmt.Sprintf("Error uploading media: %v", err)
+			return false, fmt.Sprintf("Error uploading media: %v", err), noResp
 		}
 
 		fmt.Println("Media uploaded", resp)
@@ -522,7 +532,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, req SendMessageRequest) (bool
 					seconds = analyzedSeconds
 					waveform = analyzedWaveform
 				} else {
-					return false, fmt.Sprintf("Failed to analyze Ogg Opus file: %v", err)
+					return false, fmt.Sprintf("Failed to analyze Ogg Opus file: %v", err), noResp
 				}
 			} else {
 				fmt.Printf("Not an Ogg Opus file: %s\n", mimeType)
@@ -573,13 +583,13 @@ func sendWhatsAppMessage(client *whatsmeow.Client, req SendMessageRequest) (bool
 	}
 
 	// Send message
-	_, err = client.SendMessage(context.Background(), recipientJID, msg)
+	resp, err := client.SendMessage(context.Background(), recipientJID, msg)
 
 	if err != nil {
-		return false, fmt.Sprintf("Error sending message: %v", err)
+		return false, fmt.Sprintf("Error sending message: %v", err), noResp
 	}
 
-	return true, fmt.Sprintf("Message sent to %s", recipient)
+	return true, fmt.Sprintf("Message sent to %s", recipient), resp
 }
 
 // Extract media info from a message
@@ -796,6 +806,18 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 		logger.Warnf("Failed to store chat: %v", err)
 	}
 
+	// Edits and revocations are logged as events and never overwrite the
+	// original message content (BR-5).
+	if event, ok := protocolMessageEvent(msg.Info, msg.Message); ok {
+		if err := messageStore.RecordMessageEvent(event); err != nil {
+			logger.Warnf("Failed to record %s of message %s: %v", event.Type, event.TargetMessageID, err)
+		} else {
+			fmt.Printf("[%s] %s of message %s in %s by %s\n",
+				event.Timestamp.Format("2006-01-02 15:04:05"), event.Type, event.TargetMessageID, chatJID, event.SenderJID)
+		}
+		return
+	}
+
 	// Extract text content
 	content := extractTextContent(msg.Message)
 
@@ -825,6 +847,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 		fileSHA256,
 		fileEncSHA256,
 		fileLength,
+		extractMessageMeta(msg.Info, msg.Message),
 	)
 
 	if err != nil {
@@ -854,7 +877,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 				eagerMediaDownloadSlots,
 				func() error {
 					release, reserved, err := eagerMediaCacheReservations.reserve(
-						"store",
+						messageStore.dir,
 						fileLength,
 						eagerMediaCacheMaxBytes(),
 					)
@@ -1095,7 +1118,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	var err error
 
 	// First, check if we already have this file
-	chatDir := chatMediaDirectory("store", chatJID)
+	chatDir := chatMediaDirectory(messageStore.dir, chatJID)
 	localPath := ""
 
 	// Get media info from the database
@@ -1229,10 +1252,37 @@ type MarkChatReadResponse struct {
 	Message string `json:"message"`
 }
 
-// Start a REST API server to expose the WhatsApp client functionality
-func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
+// HealthResponse is served by GET /api/health without a token. It carries no
+// chat data: it only lets a supervisor tell which instance owns a port.
+type HealthResponse struct {
+	Success   bool   `json:"success"`
+	Instance  string `json:"instance"`
+	Connected bool   `json:"connected"`
+	LoggedIn  bool   `json:"logged_in"`
+	Auth      string `json:"auth"`
+}
+
+// newRESTHandler builds the full REST API (all routes plus the auth/host
+// guards) on a private mux, so several bridge instances never share routes.
+func newRESTHandler(client *whatsmeow.Client, messageStore *MessageStore, cfg BridgeConfig) http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc(healthPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		resp := HealthResponse{Success: true, Instance: cfg.Instance, Auth: cfg.AuthMode}
+		if client != nil {
+			resp.Connected = client.IsConnected()
+			resp.LoggedIn = client.IsLoggedIn()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
+
 	// Handler for sending messages
-	http.HandleFunc("/api/send", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/send", func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1296,8 +1346,8 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		fmt.Println("Received request to send message", req.Message, req.MediaPath)
 
 		// Send the message
-		success, message := sendWhatsAppMessage(client, req)
-		fmt.Println("Message sent", success, message)
+		success, message, sendResp := sendWhatsAppMessage(client, req)
+		fmt.Println("Message sent", success, message, sendResp.ID)
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
 
@@ -1306,15 +1356,12 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 
-		// Send response
-		json.NewEncoder(w).Encode(SendMessageResponse{
-			Success: success,
-			Message: message,
-		})
+		// Send response (BR-7: includes message_id and server timestamp)
+		json.NewEncoder(w).Encode(sendResultResponse(success, message, sendResp))
 	})
 
 	// Handler for downloading media
-	http.HandleFunc("/api/download", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/download", func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1371,7 +1418,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 	})
 
 	// Handler for getting all chats with unread counts
-	http.HandleFunc("/api/chats", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/chats", func(w http.ResponseWriter, r *http.Request) {
 		// Only allow GET requests
 		if r.Method != http.MethodGet {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1402,7 +1449,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 	})
 
 	// Handler for marking a chat as read or unread
-	http.HandleFunc("/api/mark-read", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/mark-read", func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1455,38 +1502,76 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 	})
 
 	// Register routes from sibling files (labels.go, messaging.go, groups.go, contacts.go).
-	registerLabelRoutes(client, messageStore)
-	registerMessagingRoutes(client, messageStore)
-	registerGroupRoutes(client)
-	registerContactRoutes(client)
+	registerLabelRoutes(mux, client, messageStore)
+	registerMessagingRoutes(mux, client, messageStore)
+	registerGroupRoutes(mux, client)
+	registerContactRoutes(mux, client)
 
-	// Start the server (bound to loopback only — never expose to LAN)
-	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)
-	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
+	return withAPIGuards(cfg, mux, func(format string, args ...any) {
+		fmt.Printf(format+"\n", args...)
+	})
+}
+
+// startRESTServer binds the REST API to 127.0.0.1:<cfg.Port> (loopback only —
+// never expose to LAN) and serves it in the background. Binding errors are
+// returned instead of being printed and ignored, so a port clash between two
+// instances fails loudly at startup.
+func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, cfg BridgeConfig) (*http.Server, net.Addr, error) {
+	serverAddr := fmt.Sprintf("127.0.0.1:%d", cfg.Port)
+	listener, err := net.Listen("tcp", serverAddr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listen on %s: %w", serverAddr, err)
+	}
+	server := &http.Server{
+		Handler:           newRESTHandler(client, messageStore, cfg),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	fmt.Printf("Starting REST API server on %s (instance %s, auth %s)...\n", listener.Addr(), cfg.Instance, cfg.AuthMode)
 
 	// Run server in a goroutine so it doesn't block
 	go func() {
-		if err := http.ListenAndServe(serverAddr, nil); err != nil {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Printf("REST API server error: %v\n", err)
 		}
 	}()
+	return server, listener.Addr(), nil
 }
 
 func main() {
+	cfg, err := loadBridgeConfig(os.Args[1:], os.Getenv)
+	if errors.Is(err, flag.ErrHelp) {
+		os.Exit(0)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "whatsapp-bridge: configuration error: %v\n", err)
+		os.Exit(2)
+	}
+
 	// Set up logger
 	logger := waLog.Stdout("Client", "INFO", true)
-	logger.Infof("Starting WhatsApp client...")
+	logger.Infof("Starting WhatsApp client (instance %s, store %s, port %d, auth %s)...",
+		cfg.Instance, cfg.StoreDir, cfg.Port, cfg.AuthMode)
+	if cfg.AuthMode == authModeOff {
+		fmt.Println(authWarningBanner(cfg))
+	} else if cfg.AuthMode == authModeWarn {
+		logger.Warnf("REST auth in WARN mode: unauthenticated calls are logged but still served. Switch to enforce once every client sends the token.")
+	}
+	if cfg.Instance != defaultInstance {
+		// Shown under "Linked devices" on the phone for new pairings, so each
+		// agent number is easy to tell apart.
+		store.DeviceProps.Os = proto.String("whatsapp-bridge " + cfg.Instance)
+	}
 
 	// Create database connection for storing session data
 	dbLog := waLog.Stdout("Database", "INFO", true)
 
 	// Create directory for database if it doesn't exist
-	if err := os.MkdirAll("store", 0755); err != nil {
+	if err := os.MkdirAll(cfg.StoreDir, 0755); err != nil {
 		logger.Errorf("Failed to create store directory: %v", err)
 		return
 	}
 
-	container, err := sqlstore.New(context.Background(), "sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
+	container, err := sqlstore.New(context.Background(), "sqlite3", sqliteDSN(cfg.StoreDir, "whatsapp.db"), dbLog)
 	if err != nil {
 		logger.Errorf("Failed to connect to database: %v", err)
 		return
@@ -1513,7 +1598,7 @@ func main() {
 	}
 
 	// Initialize message store
-	messageStore, err := NewMessageStore()
+	messageStore, err := NewMessageStore(cfg.StoreDir)
 	if err != nil {
 		logger.Errorf("Failed to initialize message store: %v", err)
 		return
@@ -1609,7 +1694,11 @@ func main() {
 	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
 
 	// Start REST API server
-	startRESTServer(client, messageStore, 8080)
+	if _, _, err := startRESTServer(client, messageStore, cfg); err != nil {
+		logger.Errorf("Failed to start REST API server: %v", err)
+		client.Disconnect()
+		os.Exit(1)
+	}
 
 	// Create a channel to keep the main goroutine alive
 	exitChan := make(chan os.Signal, 1)
@@ -1850,6 +1939,7 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 					fileSHA256,
 					fileEncSHA256,
 					fileLength,
+					historyMessageMeta(client, jid, msg.Message),
 				)
 				if err != nil {
 					logger.Warnf("Failed to store history message: %v", err)

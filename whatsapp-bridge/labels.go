@@ -176,8 +176,8 @@ type GenericResponse struct {
 
 // --- HTTP handlers ---
 
-func registerLabelRoutes(client *whatsmeow.Client, store *MessageStore) {
-	http.HandleFunc("/api/labels", func(w http.ResponseWriter, r *http.Request) {
+func registerLabelRoutes(mux *http.ServeMux, client *whatsmeow.Client, store *MessageStore) {
+	mux.HandleFunc("/api/labels", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -218,7 +218,7 @@ func registerLabelRoutes(client *whatsmeow.Client, store *MessageStore) {
 		json.NewEncoder(w).Encode(ListLabelsResponse{Success: true, Labels: labels})
 	})
 
-	http.HandleFunc("/api/labels/chats", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/labels/chats", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -247,7 +247,7 @@ func registerLabelRoutes(client *whatsmeow.Client, store *MessageStore) {
 		json.NewEncoder(w).Encode(LabelChatsResponse{Success: true, Chats: chats})
 	})
 
-	http.HandleFunc("/api/labels/messages", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/labels/messages", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -276,7 +276,7 @@ func registerLabelRoutes(client *whatsmeow.Client, store *MessageStore) {
 		json.NewEncoder(w).Encode(LabelMessagesResponse{Success: true, Messages: out})
 	})
 
-	http.HandleFunc("/api/labels/edit", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/labels/edit", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -309,7 +309,7 @@ func registerLabelRoutes(client *whatsmeow.Client, store *MessageStore) {
 		json.NewEncoder(w).Encode(EditLabelResponse{Success: true, Message: "Label saved", LabelID: req.LabelID})
 	})
 
-	http.HandleFunc("/api/labels/chat", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/labels/chat", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -350,7 +350,7 @@ func registerLabelRoutes(client *whatsmeow.Client, store *MessageStore) {
 		json.NewEncoder(w).Encode(GenericResponse{Success: true, Message: fmt.Sprintf("Chat %s with label %s", action, req.LabelID)})
 	})
 
-	http.HandleFunc("/api/labels/message", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/labels/message", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
