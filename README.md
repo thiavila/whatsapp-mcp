@@ -40,7 +40,7 @@ The original project and contributors remain credited through the Git history an
 
 The project has two local components:
 
-1. **`whatsapp-bridge/`** — a Go process using WhatsMeow. It links to WhatsApp, receives events, stores local state in SQLite, and exposes a REST API on `127.0.0.1:8080`.
+1. **`whatsapp-bridge/`** — a Go process using WhatsMeow. It links to WhatsApp, receives events, stores local state in SQLite, and exposes a REST API on `127.0.0.1:8080` (port, data directory and instance name are configurable; see [Bridge configuration](#bridge-configuration)).
 2. **`whatsapp-mcp-server/`** — a Python MCP server. Your AI client launches it over stdio; it reads the local message database and calls the bridge for WhatsApp operations.
 
 ```text
@@ -107,6 +107,101 @@ WHATSAPP_EAGER_MEDIA_CACHE_MAX_BYTES=4294967296 \
 WHATSAPP_MEDIA_DOWNLOAD_MAX_BYTES=1073741824 \
 go run .
 ```
+
+### Bridge configuration
+
+Every setting has a default equal to the historical hard-coded value, so a
+bridge started with no flags or env vars behaves exactly as before. Flags win
+over environment variables.
+
+| Setting | Flag | Environment | Default |
+|---|---|---|---|
+| REST port (always bound to `127.0.0.1`) | `-port` | `WHATSAPP_BRIDGE_PORT` | `8080` |
+| Data directory (`whatsapp.db`, `messages.db`, media cache) | `-store-dir` | `WHATSAPP_STORE_DIR` | `store` (relative to the working directory) |
+| Instance name (logs, `/api/health`, linked-device name on new pairings) | `-instance` | `WHATSAPP_BRIDGE_INSTANCE` | `default` |
+| REST token | — (never a flag, so it stays out of `ps`) | `WHATSAPP_BRIDGE_TOKEN` or `WHATSAPP_BRIDGE_TOKEN_FILE` | unset |
+| Auth mode | — | `WHATSAPP_BRIDGE_AUTH_MODE` = `warn` or `enforce` | `enforce` when a token is set |
+| Refuse to start without a token | `-require-token` | `WHATSAPP_BRIDGE_REQUIRE_TOKEN=true` | off |
+
+Invalid settings (bad port, token shorter than 16 characters, both token
+variables set, `warn`/`enforce` without a token) stop the bridge at startup
+with exit code 2. If the port is already taken the bridge exits instead of
+running without its REST API.
+
+The Python MCP server reads the same variables, so one env file can configure
+a bridge instance and its MCP server:
+
+| MCP setting | Environment | Default |
+|---|---|---|
+| Bridge URL | `WHATSAPP_API_BASE_URL` | `http://localhost:<WHATSAPP_BRIDGE_PORT or 8080>/api` |
+| Message database | `WHATSAPP_MESSAGES_DB_PATH` | `<WHATSAPP_STORE_DIR>/messages.db` |
+| WhatsMeow database | `WHATSAPP_DB_PATH` | `<WHATSAPP_STORE_DIR>/whatsapp.db` |
+| REST token | `WHATSAPP_BRIDGE_TOKEN` or `WHATSAPP_BRIDGE_TOKEN_FILE` | unset (no header sent) |
+
+A relative `WHATSAPP_STORE_DIR` is resolved by the MCP server against
+`whatsapp-bridge/`; prefer absolute paths when the bridge runs elsewhere.
+
+### REST API authentication
+
+Without a token the REST API accepts any caller on the machine: every local
+process running as any user can send messages through the paired number. The
+bridge prints a large warning at startup in that case. Configure a token:
+
+```bash
+# generate once, store with chmod 600, never print it
+python3 -c 'import secrets;print(secrets.token_urlsafe(32))' > ~/.config/whatsapp-bridge.token
+chmod 600 ~/.config/whatsapp-bridge.token
+WHATSAPP_BRIDGE_TOKEN_FILE=~/.config/whatsapp-bridge.token go run .
+```
+
+Clients must then send `Authorization: Bearer <token>` on every call; the
+Python MCP server does this automatically when `WHATSAPP_BRIDGE_TOKEN` or
+`WHATSAPP_BRIDGE_TOKEN_FILE` is set in its environment. Unauthenticated calls
+receive HTTP 401. `GET /api/health` is the only route that does not need the
+token; it returns only the instance name, connection state and auth mode.
+
+Independently of the token, the API refuses requests whose `Host` is not a
+loopback name and any request carrying an `Origin` header, which blocks
+cross-site and DNS-rebinding requests from a web browser.
+
+**Introducing a token on a running bridge without breaking clients:**
+
+1. Update the clients first and give them the token (MCP server env, scripts
+   calling the REST API). A bridge without a token ignores the header, so
+   nothing changes yet.
+2. Restart the bridge with the token and `WHATSAPP_BRIDGE_AUTH_MODE=warn`.
+   Calls without a valid token are still served but logged as
+   `[AUTH][<instance>] unauthenticated ...`.
+3. Watch the log until no such line appears for a full cycle of your jobs,
+   then remove `WHATSAPP_BRIDGE_AUTH_MODE` (or set it to `enforce`) and
+   restart. From now on unauthenticated calls get HTTP 401.
+
+### Running several bridges (one per number)
+
+Each WhatsApp number needs its own bridge process with its own port, data
+directory and token. For example, with systemd user units:
+
+```ini
+# ~/.config/systemd/user/whatsapp-bridge@.service
+[Service]
+EnvironmentFile=%h/.config/whatsapp-bridges/%i.env
+WorkingDirectory=%h/srv/wa-bridges/%i
+ExecStart=/path/to/whatsapp-mcp/whatsapp-bridge/whatsapp-bridge
+Restart=always
+```
+
+```bash
+# ~/.config/whatsapp-bridges/sales.env (chmod 600)
+WHATSAPP_BRIDGE_INSTANCE=sales
+WHATSAPP_BRIDGE_PORT=8081
+WHATSAPP_STORE_DIR=/home/me/srv/wa-bridges/sales/store
+WHATSAPP_BRIDGE_REQUIRE_TOKEN=true
+WHATSAPP_BRIDGE_TOKEN_FILE=/home/me/.config/whatsapp-bridges/sales.token
+```
+
+Point that number's MCP server at the same env file (`WHATSAPP_BRIDGE_PORT`,
+`WHATSAPP_STORE_DIR` and the token are shared). Check which instance owns a
+port with `curl -s http://127.0.0.1:8081/api/health`.
 
 ### 3. Add the MCP server to your client
 
@@ -192,7 +287,7 @@ If compilation reports that `go-sqlite3 requires cgo`, verify that the MSYS2 `uc
 - WhatsMeow's paired-device credentials are stored in `whatsapp-bridge/store/whatsapp.db`.
 - Message history and unread metadata are stored in `whatsapp-bridge/store/messages.db`.
 - Downloaded media is stored under per-chat directories inside `whatsapp-bridge/store/`.
-- The bridge REST API listens only on `127.0.0.1:8080`; it is not intentionally exposed to the LAN.
+- The bridge REST API listens only on `127.0.0.1` (port `8080` by default); it is not intentionally exposed to the LAN. Configure a token so other local processes cannot use it.
 - Message metadata remains local. Attachments are downloaded on demand by default, or saved on arrival when eager media caching is enabled. Requested messages, contact data, or media may then be included in the AI provider's context according to that client's configuration and privacy policy.
 
 Back up the store directory if local history matters to you. Deleting it removes the local session and message database and requires pairing again.
@@ -210,6 +305,34 @@ This MCP server has powerful read and write capabilities. A connected agent may 
 Only connect it to AI clients and projects you trust. Review tool calls before approval. Content received through WhatsApp or loaded from other untrusted sources may contain prompt-injection instructions; treat that content as data, not trusted commands.
 
 The `send_file` and voice-note tools accept local file paths. A malicious or compromised agent could attempt to send files accessible to the MCP process. Run the MCP client with the least filesystem access practical.
+
+## Message metadata and edit history
+
+`messages.db` stores, next to the legacy columns, metadata taken from the
+WhatsApp protocol (not from message text), so automations can identify
+senders reliably in groups:
+
+| Column | Meaning |
+|---|---|
+| `sender_jid` | Full sender JID without device suffix (`...@lid` or `...@s.whatsapp.net`). The legacy `sender` column keeps only the user part. |
+| `sender_alt_jid` | The alternative address WhatsApp provides (phone number for a LID sender and vice versa), when present. |
+| `push_name` | Display name chosen by the sender. **Not verified.** |
+| `mentioned_jids` | JSON array of mentioned JIDs, or `NULL`. |
+| `quoted_message_id` | ID of the message being replied to, or `NULL`. |
+| `is_forwarded` | Whether WhatsApp marked the message as forwarded. |
+| `edited_at` / `revoked_at` | Time of the latest edit / deletion seen for this message. |
+
+Edits and deletions received from WhatsApp never overwrite the stored content:
+each one is appended to the `message_events` table (`event_type` `edit` or
+`revoke`, `target_message_id`, `sender_jid`, `new_content`, `timestamp`) and
+flags the original row. Edits and deletions made through this bridge's own
+`edit_message` / `delete_message` tools are logged there too (and, as before,
+also update the local copy). Older databases are upgraded in place the first
+time the new bridge starts; rows stored earlier keep `NULL` metadata.
+
+`POST /api/send` returns the WhatsApp `message_id` and server `timestamp` of
+the sent message alongside `success` and `message`; the `send_message` MCP
+tool passes them through.
 
 ## Message sending and typing delay
 
@@ -267,7 +390,11 @@ Restart the MCP host application. Existing stdio MCP processes do not reload Pyt
 
 ### The bridge cannot bind port 8080
 
-Another process is already using the bridge port. Stop the other bridge instance and run `go run .` again.
+Another process is already using the bridge port, and the bridge exits with `Failed to start REST API server`. Stop the other bridge instance, or give this one another port with `-port` / `WHATSAPP_BRIDGE_PORT` (and point its MCP server at the same port).
+
+### The MCP reports `HTTP 401`
+
+The bridge has a token and the MCP server is not sending it (or sends another one). Set `WHATSAPP_BRIDGE_TOKEN` or `WHATSAPP_BRIDGE_TOKEN_FILE` in the MCP server's environment to the bridge's value and restart the MCP host.
 
 ### New messages are missing
 

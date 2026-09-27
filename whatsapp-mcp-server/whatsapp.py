@@ -10,9 +10,74 @@ import audio
 import random
 import time
 
-MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
-WHATSAPP_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'whatsapp.db')
-WHATSAPP_API_BASE_URL = "http://localhost:8080/api"
+BRIDGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge')
+
+
+def load_bridge_settings(env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Resolve where the bridge lives (BR-3). Explicit env > derived > legacy default.
+
+    - WHATSAPP_API_BASE_URL, else http://localhost:<WHATSAPP_BRIDGE_PORT or 8080>/api
+    - WHATSAPP_MESSAGES_DB_PATH / WHATSAPP_DB_PATH, else <WHATSAPP_STORE_DIR>/messages.db
+      and <WHATSAPP_STORE_DIR>/whatsapp.db, where a relative store dir is resolved
+      against ../whatsapp-bridge (the bridge's usual working directory) and the
+      default store dir is ../whatsapp-bridge/store.
+
+    The same env file can therefore configure a bridge instance and its MCP server.
+    """
+    env = os.environ if env is None else env
+    store_dir = (env.get("WHATSAPP_STORE_DIR") or "").strip() or "store"
+    if not os.path.isabs(store_dir):
+        store_dir = os.path.join(BRIDGE_DIR, store_dir)
+    port = (env.get("WHATSAPP_BRIDGE_PORT") or "").strip() or "8080"
+    base_url = (env.get("WHATSAPP_API_BASE_URL") or "").strip() or f"http://localhost:{port}/api"
+    return {
+        "api_base_url": base_url.rstrip("/"),
+        "messages_db_path": (env.get("WHATSAPP_MESSAGES_DB_PATH") or "").strip()
+        or os.path.join(store_dir, "messages.db"),
+        "whatsapp_db_path": (env.get("WHATSAPP_DB_PATH") or "").strip()
+        or os.path.join(store_dir, "whatsapp.db"),
+    }
+
+
+_SETTINGS = load_bridge_settings()
+MESSAGES_DB_PATH = _SETTINGS["messages_db_path"]
+WHATSAPP_DB_PATH = _SETTINGS["whatsapp_db_path"]
+WHATSAPP_API_BASE_URL = _SETTINGS["api_base_url"]
+
+
+def bridge_token(env: Optional[Dict[str, str]] = None) -> Optional[str]:
+    """REST token shared with the bridge (BR-8): WHATSAPP_BRIDGE_TOKEN or the
+    first line of WHATSAPP_BRIDGE_TOKEN_FILE. Read on every call so a rotated
+    token file is picked up without restarting the MCP server."""
+    env = os.environ if env is None else env
+    token = (env.get("WHATSAPP_BRIDGE_TOKEN") or "").strip()
+    if token:
+        return token
+    token_file = (env.get("WHATSAPP_BRIDGE_TOKEN_FILE") or "").strip()
+    if token_file:
+        try:
+            with open(token_file, "r", encoding="utf-8") as handle:
+                return handle.read().strip() or None
+        except OSError:
+            return None
+    return None
+
+
+def bridge_headers() -> Dict[str, str]:
+    """Authorization header for the bridge REST API. Sending it to a bridge that
+    has no token configured is harmless, so clients can be updated first."""
+    token = bridge_token()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _bridge_post(url: str, **kwargs):
+    headers = {**bridge_headers(), **kwargs.pop("headers", {})}
+    return requests.post(url, headers=headers, **kwargs)
+
+
+def _bridge_get(url: str, **kwargs):
+    headers = {**bridge_headers(), **kwargs.pop("headers", {})}
+    return requests.get(url, headers=headers, **kwargs)
 
 TYPING_CHARS_PER_SECOND = 12.0
 TYPING_JITTER_MIN = 0.75
@@ -800,6 +865,17 @@ def _typing_delay_seconds(message: str) -> float:
     )
 
 
+def _send_result(success: bool, message: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Normalise a /api/send outcome. BR-7: a successful send carries the
+    WhatsApp message_id and server timestamp, the evidence of delivery."""
+    result: Dict[str, Any] = {"success": bool(success), "message": message}
+    if success and body:
+        for key in ("message_id", "timestamp"):
+            if body.get(key):
+                result[key] = body[key]
+    return result
+
+
 def send_message(
     recipient: str,
     message: str,
@@ -807,12 +883,27 @@ def send_message(
     *,
     reply_to_message_id: Optional[str] = None,
 ) -> Tuple[bool, str]:
+    result = send_message_detailed(
+        recipient, message, show_typing, reply_to_message_id=reply_to_message_id
+    )
+    return result["success"], result["message"]
+
+
+def send_message_detailed(
+    recipient: str,
+    message: str,
+    show_typing: bool = True,
+    *,
+    reply_to_message_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Like send_message, but returns a dict that also carries message_id and
+    timestamp when the bridge reports them."""
     typing_jid = None
     typing_started = False
     try:
         # Validate input
         if not recipient:
-            return False, "Recipient must be provided"
+            return _send_result(False, "Recipient must be provided")
 
         if show_typing:
             typing_jid = resolve_chat_identity(recipient).canonical_jid
@@ -828,21 +919,21 @@ def send_message(
         if reply_to_message_id:
             payload["reply_to_message_id"] = reply_to_message_id
         
-        response = requests.post(url, json=payload)
+        response = _bridge_post(url, json=payload)
         
         # Check if the request was successful
         if response.status_code == 200:
             result = response.json()
-            return result.get("success", False), result.get("message", "Unknown response")
+            return _send_result(result.get("success", False), result.get("message", "Unknown response"), result)
         else:
-            return False, f"Error: HTTP {response.status_code} - {response.text}"
+            return _send_result(False, _http_error(response))
             
     except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+        return _send_result(False, f"Request error: {str(e)}")
     except json.JSONDecodeError:
-        return False, f"Error parsing response: {response.text}"
+        return _send_result(False, f"Error parsing response: {response.text}")
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}"
+        return _send_result(False, f"Unexpected error: {str(e)}")
     finally:
         if typing_started and typing_jid:
             # Clearing presence is best-effort and must not change send status.
@@ -866,14 +957,17 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
         
-        response = requests.post(url, json=payload)
+        response = _bridge_post(url, json=payload)
         
         # Check if the request was successful
         if response.status_code == 200:
             result = response.json()
-            return result.get("success", False), result.get("message", "Unknown response")
+            status = result.get("message", "Unknown response")
+            if result.get("message_id"):
+                status = f"{status} (message_id: {result['message_id']})"
+            return result.get("success", False), status
         else:
-            return False, f"Error: HTTP {response.status_code} - {response.text}"
+            return False, _http_error(response)
             
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
@@ -906,14 +1000,17 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
         
-        response = requests.post(url, json=payload)
+        response = _bridge_post(url, json=payload)
         
         # Check if the request was successful
         if response.status_code == 200:
             result = response.json()
-            return result.get("success", False), result.get("message", "Unknown response")
+            status = result.get("message", "Unknown response")
+            if result.get("message_id"):
+                status = f"{status} (message_id: {result['message_id']})"
+            return result.get("success", False), status
         else:
-            return False, f"Error: HTTP {response.status_code} - {response.text}"
+            return False, _http_error(response)
             
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
@@ -939,7 +1036,7 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
             "chat_jid": chat_jid
         }
         
-        response = requests.post(url, json=payload)
+        response = _bridge_post(url, json=payload)
         
         if response.status_code == 200:
             result = response.json()
@@ -965,10 +1062,19 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
         return None
 
 
+def _http_error(response) -> str:
+    if response.status_code == 401:
+        return (
+            "Error: HTTP 401 - the bridge rejected the REST token. Set WHATSAPP_BRIDGE_TOKEN "
+            "(or WHATSAPP_BRIDGE_TOKEN_FILE) to the same value the bridge uses."
+        )
+    return f"Error: HTTP {response.status_code} - {response.text}"
+
+
 def _get_json(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """GET a JSON response from the bridge with consistent error handling."""
     try:
-        response = requests.get(f"{WHATSAPP_API_BASE_URL}{path}", params=params)
+        response = _bridge_get(f"{WHATSAPP_API_BASE_URL}{path}", params=params)
         if response.status_code != 200:
             return {"success": False, "message": f"HTTP {response.status_code}: {response.text}"}
         return response.json()
@@ -979,7 +1085,7 @@ def _get_json(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, A
 def _post_json(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     """POST and return the full parsed JSON body."""
     try:
-        response = requests.post(f"{WHATSAPP_API_BASE_URL}{path}", json=payload)
+        response = _bridge_post(f"{WHATSAPP_API_BASE_URL}{path}", json=payload)
         return response.json()
     except (requests.RequestException, json.JSONDecodeError) as e:
         return {"success": False, "message": str(e)}
@@ -992,7 +1098,7 @@ def _post_simple(path: str, payload: Dict[str, Any]) -> Tuple[bool, str]:
     Centralises HTTP/JSON exception handling.
     """
     try:
-        response = requests.post(f"{WHATSAPP_API_BASE_URL}{path}", json=payload)
+        response = _bridge_post(f"{WHATSAPP_API_BASE_URL}{path}", json=payload)
         result = response.json()
         return bool(result.get("success", False)), result.get("message", "Unknown response")
     except requests.RequestException as e:
@@ -1089,7 +1195,7 @@ def check_phones_on_whatsapp(phones: List[str]) -> List[Dict[str, Any]]:
     Phone numbers must be in E.164 format with the leading ``+``.
     """
     try:
-        response = requests.post(f"{WHATSAPP_API_BASE_URL}/contacts/check", json={"phones": phones})
+        response = _bridge_post(f"{WHATSAPP_API_BASE_URL}/contacts/check", json={"phones": phones})
         if response.status_code != 200:
             return []
         return response.json().get("results", []) or []
@@ -1229,7 +1335,7 @@ def list_labels(include_deleted: bool = False) -> List[Dict[str, Any]]:
     try:
         url = f"{WHATSAPP_API_BASE_URL}/labels"
         params = {"include_deleted": "true"} if include_deleted else None
-        response = requests.get(url, params=params)
+        response = _bridge_get(url, params=params)
         if response.status_code != 200:
             return []
         return response.json().get("labels", []) or []
@@ -1241,7 +1347,7 @@ def get_chats_with_label(label_id: str) -> List[str]:
     """Return chat JIDs that currently carry the given label."""
     try:
         url = f"{WHATSAPP_API_BASE_URL}/labels/chats"
-        response = requests.get(url, params={"label_id": label_id})
+        response = _bridge_get(url, params={"label_id": label_id})
         if response.status_code != 200:
             return []
         return response.json().get("chats", []) or []
@@ -1253,7 +1359,7 @@ def get_messages_with_label(label_id: str) -> List[Dict[str, str]]:
     """Return {chat_jid, message_id} pairs that currently carry the given label."""
     try:
         url = f"{WHATSAPP_API_BASE_URL}/labels/messages"
-        response = requests.get(url, params={"label_id": label_id})
+        response = _bridge_get(url, params={"label_id": label_id})
         if response.status_code != 200:
             return []
         return response.json().get("messages", []) or []
@@ -1275,7 +1381,7 @@ def upsert_label(label_id: str, name: str, color: int, deleted: bool) -> Tuple[b
             "color": color,
             "deleted": deleted,
         }
-        response = requests.post(url, json=payload)
+        response = _bridge_post(url, json=payload)
         result = response.json()
         return (
             bool(result.get("success", False)),
@@ -1293,7 +1399,7 @@ def label_chat(label_id: str, chat_jid: str, labeled: bool) -> Tuple[bool, str]:
     try:
         url = f"{WHATSAPP_API_BASE_URL}/labels/chat"
         payload = {"label_id": label_id, "chat_jid": chat_jid, "labeled": labeled}
-        response = requests.post(url, json=payload)
+        response = _bridge_post(url, json=payload)
         result = response.json()
         return bool(result.get("success", False)), result.get("message", "Unknown response")
     except requests.RequestException as e:
@@ -1312,7 +1418,7 @@ def label_message(label_id: str, chat_jid: str, message_id: str, labeled: bool) 
             "message_id": message_id,
             "labeled": labeled,
         }
-        response = requests.post(url, json=payload)
+        response = _bridge_post(url, json=payload)
         result = response.json()
         return bool(result.get("success", False)), result.get("message", "Unknown response")
     except requests.RequestException as e:
