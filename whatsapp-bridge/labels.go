@@ -391,3 +391,30 @@ func registerLabelRoutes(mux *http.ServeMux, client *whatsmeow.Client, store *Me
 		json.NewEncoder(w).Encode(GenericResponse{Success: true, Message: fmt.Sprintf("Message %s with label %s", action, req.LabelID)})
 	})
 }
+
+// backfillLabelsIfEmpty re-runs a full app-state sync of the "regular"
+// collection once when no label is stored yet (sessions paired while full-sync
+// events were not emitted). Labels and their chat/message associations all live
+// in "regular"; other collections are left alone (regular_low, for instance,
+// replays read markers). With EmitAppStateEventsOnFullSync on, the normal label
+// handlers store the result.
+func backfillLabelsIfEmpty(client *whatsmeow.Client, store *MessageStore, logger waLog.Logger) {
+	var n int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM labels`).Scan(&n); err != nil || n > 0 {
+		return
+	}
+	if client == nil || !client.IsConnected() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := client.FetchAppState(ctx, appstate.WAPatchRegular, true, false); err != nil {
+		logger.Warnf("Label backfill: app state %s failed (will retry on next start): %v", appstate.WAPatchRegular, err)
+		return
+	}
+	var labels, chats, msgs int
+	_ = store.db.QueryRow(`SELECT COUNT(*) FROM labels`).Scan(&labels)
+	_ = store.db.QueryRow(`SELECT COUNT(*) FROM label_chats`).Scan(&chats)
+	_ = store.db.QueryRow(`SELECT COUNT(*) FROM label_messages`).Scan(&msgs)
+	fmt.Printf("Label backfill done: %d labels, %d chat associations, %d message associations\n", labels, chats, msgs)
+}

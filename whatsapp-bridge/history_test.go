@@ -129,3 +129,16 @@ func TestHistoryDirectChatSenderIsTheChat(t *testing.T) {
 		t.Fatalf("direct chat sender = %+v", msgs)
 	}
 }
+
+func TestLabelBackfillSkipsWhenLabelsExist(t *testing.T) {
+	store, err := NewMessageStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.db.Exec(`INSERT INTO labels (id, name, color, deleted, updated_at) VALUES ('1', 'publicado', 3, 0, ?)`, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// With labels already stored it must return before touching the client (nil here).
+	backfillLabelsIfEmpty(nil, store, nil)
+}
