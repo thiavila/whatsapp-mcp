@@ -64,17 +64,27 @@ func historyConversationMessages(conv *waHistorySync.Conversation, chat types.JI
 		}
 
 		key := web.GetKey()
+		if key.GetID() == "" {
+			continue // would collapse into one empty-ID row per chat
+		}
 		m.IsFromMe = key.GetFromMe()
+		// Same precedence as whatsmeow's ParseWebMessage; stored as the user part,
+		// like the live message handler (msg.Info.Sender.User).
 		switch {
 		case m.IsFromMe:
 			m.Sender = selfUser
-		case key.GetParticipant() != "":
-			m.Sender = key.GetParticipant()
-		case web.GetParticipant() != "":
-			// Group history often carries the author here instead of in the key.
-			m.Sender = web.GetParticipant()
-		default:
+		case chat.Server != types.GroupServer:
 			m.Sender = chat.User
+		default:
+			author := web.GetParticipant()
+			if author == "" {
+				author = key.GetParticipant()
+			}
+			jid, err := types.ParseJID(author)
+			if author == "" || err != nil || jid.User == "" {
+				continue // group message without a known author: don't attribute it to the group
+			}
+			m.Sender = jid.User
 		}
 		m.ID = key.GetID()
 		m.Content = content
@@ -112,7 +122,12 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 		messages, latest := historyConversationMessages(conversation, jid, selfUser)
 		if !latest.IsZero() {
 			name := GetChatName(client, messageStore, jid, chatJID, conversation, "", logger)
-			if err := messageStore.StoreHistoryChat(chatJID, name, latest, int32(conversation.GetUnreadCount())); err != nil {
+			var unread *int32
+			if conversation.UnreadCount != nil { // absent != zero: keep what we know
+				n := int32(conversation.GetUnreadCount())
+				unread = &n
+			}
+			if err := messageStore.StoreHistoryChat(chatJID, name, latest, unread); err != nil {
 				logger.Warnf("Failed to store history chat %s: %v", chatJID, err)
 			}
 		}

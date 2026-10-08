@@ -172,18 +172,28 @@ func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time
 }
 
 // StoreHistoryChat upserts a chat seen in a history-sync chunk. Chunks arrive in
-// any order, so it never moves last_message_time backwards and never blanks a
-// known name.
-func (store *MessageStore) StoreHistoryChat(jid, name string, lastMessageTime time.Time, unreadCount int32) error {
+// any order, so last_message_time never moves backwards (compared as instants via
+// julianday, since stored values may carry different UTC offsets), a known name is
+// never blanked, and unread_count only changes when the chunk carries a count and is
+// not older than what is stored (nil = the chunk did not say).
+func (store *MessageStore) StoreHistoryChat(jid, name string, lastMessageTime time.Time, unreadCount *int32) error {
+	var unread any
+	if unreadCount != nil {
+		unread = *unreadCount
+	}
 	_, err := store.db.Exec(
-		`INSERT INTO chats (jid, name, last_message_time, unread_count) VALUES (?, ?, ?, ?)
+		`INSERT INTO chats (jid, name, last_message_time, unread_count) VALUES (?1, ?2, ?3, COALESCE(?4, 0))
 		ON CONFLICT (jid) DO UPDATE SET
 			name = COALESCE(NULLIF(excluded.name, ''), chats.name),
+			unread_count = CASE
+				WHEN ?4 IS NOT NULL AND (chats.last_message_time IS NULL
+					OR julianday(chats.last_message_time) <= julianday(excluded.last_message_time))
+				THEN ?4 ELSE chats.unread_count END,
 			last_message_time = CASE
-				WHEN chats.last_message_time IS NULL OR chats.last_message_time < excluded.last_message_time
-				THEN excluded.last_message_time ELSE chats.last_message_time END,
-			unread_count = excluded.unread_count`,
-		jid, name, lastMessageTime, unreadCount,
+				WHEN chats.last_message_time IS NULL
+					OR julianday(chats.last_message_time) < julianday(excluded.last_message_time)
+				THEN excluded.last_message_time ELSE chats.last_message_time END`,
+		jid, name, lastMessageTime, unread,
 	)
 	return err
 }
@@ -1658,6 +1668,15 @@ func main() {
 		}
 		if err := client.Connect(); err != nil {
 			logger.Errorf("Failed to connect for logout: %v", err)
+			os.Exit(1)
+		}
+		// Connect returns before authentication finishes; Logout needs a live session.
+		deadline := time.Now().Add(30 * time.Second)
+		for !client.IsLoggedIn() && time.Now().Before(deadline) {
+			time.Sleep(500 * time.Millisecond)
+		}
+		if !client.IsLoggedIn() {
+			logger.Errorf("Logout aborted: the session did not authenticate within 30s (nothing was deleted)")
 			os.Exit(1)
 		}
 		if err := client.Logout(context.Background()); err != nil {
