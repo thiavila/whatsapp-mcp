@@ -122,6 +122,7 @@ over environment variables.
 | REST token | — (never a flag, so it stays out of `ps`) | `WHATSAPP_BRIDGE_TOKEN` or `WHATSAPP_BRIDGE_TOKEN_FILE` | unset |
 | Auth mode | — | `WHATSAPP_BRIDGE_AUTH_MODE` = `warn` or `enforce` | `enforce` when a token is set |
 | Refuse to start without a token | `-require-token` | `WHATSAPP_BRIDGE_REQUIRE_TOKEN=true` | off |
+| Full history sync on a **new** pairing (days; WhatsApp caps what the phone sends) | `-full-history-days` | `WHATSAPP_FULL_HISTORY_DAYS=365` | 0 (recent history only) |
 
 Invalid settings (bad port, token shorter than 16 characters, both token
 variables set, `warn`/`enforce` without a token) stop the bridge at startup

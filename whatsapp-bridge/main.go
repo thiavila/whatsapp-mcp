@@ -32,6 +32,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/proto/waCompanionReg"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
@@ -1584,6 +1585,7 @@ func main() {
 		// agent number is easy to tell apart.
 		store.DeviceProps.Os = proto.String("whatsapp-bridge " + cfg.Instance)
 	}
+	applyFullHistorySync(cfg)
 
 	// Create database connection for storing session data
 	dbLog := waLog.Stdout("Database", "INFO", true)
@@ -2293,4 +2295,18 @@ func (store *MessageStore) AreMessagesIncoming(messageIDs []string, chatJID stri
 
 	// If count > 0, at least one message is incoming
 	return count > 0, nil
+}
+
+// applyFullHistorySync configures the companion DeviceProps sent at pairing
+// time so the phone uploads up to cfg.FullHistoryDays of history instead of
+// only the recent window. Only new pairings are affected.
+func applyFullHistorySync(cfg BridgeConfig) {
+	if cfg.FullHistoryDays == 0 {
+		return
+	}
+	store.DeviceProps.RequireFullSync = proto.Bool(true)
+	if store.DeviceProps.HistorySyncConfig == nil {
+		store.DeviceProps.HistorySyncConfig = &waCompanionReg.DeviceProps_HistorySyncConfig{}
+	}
+	store.DeviceProps.HistorySyncConfig.FullSyncDaysLimit = proto.Uint32(cfg.FullHistoryDays)
 }

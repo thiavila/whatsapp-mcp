@@ -22,6 +22,9 @@ const (
 	defaultBridgePort = 8080
 	defaultStoreDir   = "store"
 	defaultInstance   = "default"
+	// maxFullHistoryDays caps the full-sync request (WhatsApp itself limits what
+	// the phone actually sends).
+	maxFullHistoryDays = 3650
 
 	// minTokenLength rejects trivially guessable tokens. 32 random bytes in
 	// base64url (python3 -c 'import secrets;print(secrets.token_urlsafe(32))')
@@ -52,16 +55,23 @@ type BridgeConfig struct {
 	// unauthenticated calls are logged but still served — migration aid) or
 	// "enforce" (unauthenticated calls get HTTP 401).
 	AuthMode string
+
+	// FullHistoryDays > 0 asks the phone for a full history sync of up to that
+	// many days when a NEW device is paired (RequireFullSync + FullSyncDaysLimit
+	// in the companion DeviceProps). It has no effect on an already paired
+	// session. 0 keeps WhatsApp's default (recent history only).
+	FullHistoryDays uint32
 }
 
 // loadBridgeConfig resolves the configuration with precedence
 // flag > environment > default.
 //
-// Flags:   -port, -store-dir, -instance, -require-token
+// Flags:   -port, -store-dir, -instance, -require-token, -full-history-days
 // Env:     WHATSAPP_BRIDGE_PORT, WHATSAPP_STORE_DIR, WHATSAPP_BRIDGE_INSTANCE,
 //
 //	WHATSAPP_BRIDGE_TOKEN or WHATSAPP_BRIDGE_TOKEN_FILE,
-//	WHATSAPP_BRIDGE_AUTH_MODE (warn|enforce), WHATSAPP_BRIDGE_REQUIRE_TOKEN
+//	WHATSAPP_BRIDGE_AUTH_MODE (warn|enforce), WHATSAPP_BRIDGE_REQUIRE_TOKEN,
+//	WHATSAPP_FULL_HISTORY_DAYS
 func loadBridgeConfig(args []string, getenv func(string) string) (BridgeConfig, error) {
 	cfg := BridgeConfig{Port: defaultBridgePort, StoreDir: defaultStoreDir, Instance: defaultInstance}
 
@@ -71,6 +81,7 @@ func loadBridgeConfig(args []string, getenv func(string) string) (BridgeConfig, 
 	storeFlag := fs.String("store-dir", "", "directory for messages.db, whatsapp.db and the media cache (env WHATSAPP_STORE_DIR, default ./store)")
 	instanceFlag := fs.String("instance", "", "instance name used in logs and /api/health (env WHATSAPP_BRIDGE_INSTANCE)")
 	requireTokenFlag := fs.Bool("require-token", false, "refuse to start without a REST token (env WHATSAPP_BRIDGE_REQUIRE_TOKEN)")
+	fullHistoryFlag := fs.Uint("full-history-days", 0, "on a new pairing, request a full history sync of up to N days (env WHATSAPP_FULL_HISTORY_DAYS, default 0 = WhatsApp default)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fs.SetOutput(os.Stderr)
@@ -111,6 +122,19 @@ func loadBridgeConfig(args []string, getenv func(string) string) (BridgeConfig, 
 	}
 	if cfg.Instance == "" {
 		cfg.Instance = defaultInstance
+	}
+
+	if flagSet["full-history-days"] {
+		cfg.FullHistoryDays = uint32(*fullHistoryFlag)
+	} else if raw := strings.TrimSpace(getenv("WHATSAPP_FULL_HISTORY_DAYS")); raw != "" {
+		days, err := strconv.ParseUint(raw, 10, 32)
+		if err != nil {
+			return cfg, fmt.Errorf("WHATSAPP_FULL_HISTORY_DAYS=%q is not a non-negative number", raw)
+		}
+		cfg.FullHistoryDays = uint32(days)
+	}
+	if cfg.FullHistoryDays > maxFullHistoryDays {
+		return cfg, fmt.Errorf("full history days %d above the maximum %d", cfg.FullHistoryDays, maxFullHistoryDays)
 	}
 
 	requireToken := *requireTokenFlag

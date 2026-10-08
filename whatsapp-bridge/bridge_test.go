@@ -15,6 +15,8 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/proto/waCompanionReg"
+	waStore "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
 )
@@ -796,5 +798,44 @@ func TestPendingEventsFollowVerifiedAliasAcrossReopen(t *testing.T) {
 			t.Fatalf("event under %s did not flag target stored later under alias %s", tc.eventChat, tc.targetChat)
 		}
 		store.Close()
+	}
+}
+
+// --- Full history sync on new pairings ------------------------------------------------
+
+func TestFullHistoryDaysConfig(t *testing.T) {
+	cfg, err := loadBridgeConfig(nil, envMap(nil))
+	if err != nil || cfg.FullHistoryDays != 0 {
+		t.Fatalf("default must be 0 (WhatsApp default sync): %+v %v", cfg, err)
+	}
+	cfg, err = loadBridgeConfig(nil, envMap(map[string]string{"WHATSAPP_FULL_HISTORY_DAYS": "365"}))
+	if err != nil || cfg.FullHistoryDays != 365 {
+		t.Fatalf("env not applied: %+v %v", cfg, err)
+	}
+	cfg, err = loadBridgeConfig([]string{"-full-history-days", "90"}, envMap(map[string]string{"WHATSAPP_FULL_HISTORY_DAYS": "365"}))
+	if err != nil || cfg.FullHistoryDays != 90 {
+		t.Fatalf("flag must override env: %+v %v", cfg, err)
+	}
+	for _, bad := range []string{"-1", "abc", "99999"} {
+		if _, err := loadBridgeConfig(nil, envMap(map[string]string{"WHATSAPP_FULL_HISTORY_DAYS": bad})); err == nil {
+			t.Fatalf("WHATSAPP_FULL_HISTORY_DAYS=%q must be rejected", bad)
+		}
+	}
+}
+
+func TestApplyFullHistorySync(t *testing.T) {
+	saved := proto.Clone(waStore.DeviceProps).(*waCompanionReg.DeviceProps)
+	t.Cleanup(func() { waStore.DeviceProps = saved })
+
+	applyFullHistorySync(BridgeConfig{FullHistoryDays: 0})
+	if waStore.DeviceProps.GetRequireFullSync() || waStore.DeviceProps.GetHistorySyncConfig().GetFullSyncDaysLimit() != 0 {
+		t.Fatal("0 days must leave the default DeviceProps untouched")
+	}
+	applyFullHistorySync(BridgeConfig{FullHistoryDays: 365})
+	if !waStore.DeviceProps.GetRequireFullSync() || waStore.DeviceProps.GetHistorySyncConfig().GetFullSyncDaysLimit() != 365 {
+		t.Fatalf("full sync not requested: %+v", waStore.DeviceProps.GetHistorySyncConfig())
+	}
+	if waStore.DeviceProps.GetHistorySyncConfig().GetStorageQuotaMb() == 0 {
+		t.Fatal("existing HistorySyncConfig fields must be preserved")
 	}
 }

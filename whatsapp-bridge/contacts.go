@@ -219,14 +219,22 @@ func registerContactRoutes(mux *http.ServeMux, client *whatsmeow.Client) {
 			writeJSON(http.StatusMethodNotAllowed, BlocklistResponse{Success: false, Message: "Method not allowed"})
 			return
 		}
-		bl, err := client.GetBlocklist(context.Background())
+		bl, err := client.GetBlocklist(context.Background(), "") // empty dhash = always return the full list
 		if err != nil {
 			writeJSON(http.StatusInternalServerError, BlocklistResponse{Success: false, Message: err.Error()})
 			return
 		}
-		jids := make([]string, 0, len(bl.JIDs))
-		for _, j := range bl.JIDs {
-			jids = append(jids, j.String())
+		// whatsmeow now returns items with both identities; keep the old
+		// response shape (one JID per blocked contact), preferring the phone
+		// number JID and falling back to the LID.
+		jids := make([]string, 0, len(bl.Items))
+		for _, item := range bl.Items {
+			switch {
+			case !item.PN.IsEmpty():
+				jids = append(jids, item.PN.String())
+			case !item.LID.IsEmpty():
+				jids = append(jids, item.LID.String())
+			}
 		}
 		writeJSON(http.StatusOK, BlocklistResponse{Success: true, JIDs: jids})
 	})
@@ -251,7 +259,7 @@ func registerContactRoutes(mux *http.ServeMux, client *whatsmeow.Client) {
 		if req.Block {
 			action = events.BlocklistChangeActionBlock
 		}
-		if _, err := client.UpdateBlocklist(context.Background(), jid, action); err != nil {
+		if _, err := client.UpdateBlocklist(context.Background(), jid, action, ""); err != nil {
 			writeJSON(http.StatusInternalServerError, GenericResponse{Success: false, Message: err.Error()})
 			return
 		}
