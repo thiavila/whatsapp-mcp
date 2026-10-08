@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -409,6 +410,17 @@ func backfillLabelsIfEmpty(client *whatsmeow.Client, store *MessageStore, logger
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if err := client.FetchAppState(ctx, appstate.WAPatchRegular, true, false); err != nil {
+		if errors.Is(err, appstate.ErrMismatchingLTHash) {
+			// The server copy of the collection does not verify for this device.
+			// Ask the phone (primary device) for a fresh snapshot instead; whatsmeow
+			// applies the response when it arrives and dispatches the label events.
+			if _, rerr := client.SendPeerMessage(ctx, whatsmeow.BuildAppStateRecoveryRequest(appstate.WAPatchRegular)); rerr != nil {
+				logger.Warnf("Label backfill: %v; app state recovery request failed: %v", err, rerr)
+				return
+			}
+			fmt.Printf("Label backfill: %v; asked the phone for an app state recovery snapshot (labels arrive when it answers)\n", err)
+			return
+		}
 		logger.Warnf("Label backfill: app state %s failed (will retry on next start): %v", appstate.WAPatchRegular, err)
 		return
 	}
