@@ -2098,6 +2098,12 @@ func placeholderWaveform(duration uint32) []byte {
 
 // Handle chat read status changes from other devices
 func handleMarkChatAsRead(messageStore *MessageStore, evt *events.MarkChatAsRead, logger waLog.Logger) {
+	// Full app-state syncs replay old read markers (now emitted because labels
+	// need EmitAppStateEventsOnFullSync); applying them would overwrite the
+	// unread state of newer messages. Only live changes are applied.
+	if evt.FromFullSync {
+		return
+	}
 	chatJID := evt.JID.String()
 
 	// Check if we have an action and if the chat was marked as read

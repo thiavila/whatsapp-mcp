@@ -392,26 +392,25 @@ func registerLabelRoutes(mux *http.ServeMux, client *whatsmeow.Client, store *Me
 	})
 }
 
-// labelBackfillPatches are the app-state collections that carry labels and
-// their chat/message associations.
-var labelBackfillPatches = []appstate.WAPatchName{
-	appstate.WAPatchRegularHigh, appstate.WAPatchRegular, appstate.WAPatchRegularLow,
-}
-
-// backfillLabelsIfEmpty re-runs a full app-state sync once when no label is
-// stored yet (sessions paired while full-sync events were not emitted). With
-// EmitAppStateEventsOnFullSync on, the normal label handlers store the result.
+// backfillLabelsIfEmpty re-runs a full app-state sync of the "regular"
+// collection once when no label is stored yet (sessions paired while full-sync
+// events were not emitted). Labels and their chat/message associations all live
+// in "regular"; other collections are left alone (regular_low, for instance,
+// replays read markers). With EmitAppStateEventsOnFullSync on, the normal label
+// handlers store the result.
 func backfillLabelsIfEmpty(client *whatsmeow.Client, store *MessageStore, logger waLog.Logger) {
 	var n int
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM labels`).Scan(&n); err != nil || n > 0 {
 		return
 	}
+	if client == nil || !client.IsConnected() {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	for _, name := range labelBackfillPatches {
-		if err := client.FetchAppState(ctx, name, true, false); err != nil {
-			logger.Warnf("Label backfill: app state %s failed: %v", name, err)
-		}
+	if err := client.FetchAppState(ctx, appstate.WAPatchRegular, true, false); err != nil {
+		logger.Warnf("Label backfill: app state %s failed (will retry on next start): %v", appstate.WAPatchRegular, err)
+		return
 	}
 	var labels, chats, msgs int
 	_ = store.db.QueryRow(`SELECT COUNT(*) FROM labels`).Scan(&labels)
