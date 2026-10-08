@@ -83,10 +83,28 @@ type DisappearingTimerRequest struct {
 	Timer string `json:"timer"`
 }
 
+// recordLocalMessageEvent logs an edit/revoke issued through this bridge.
+// Failures are only logged: the WhatsApp action already succeeded.
+func recordLocalMessageEvent(store *MessageStore, event MessageEvent, client *whatsmeow.Client) {
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now()
+	}
+	if client != nil && client.Store != nil && client.Store.ID != nil {
+		event.SenderJID = client.Store.ID.ToNonAD().String()
+	}
+	if event.EventID == "" {
+		event.EventID = fmt.Sprintf("local-%s-%s-%d", event.Type, event.TargetMessageID, event.Timestamp.UnixNano())
+	}
+	event.AliasChatJIDs = chatAliases(client, event.ChatJID)
+	if err := store.RecordMessageEvent(event); err != nil {
+		fmt.Printf("Failed to record local %s of %s: %v\n", event.Type, event.TargetMessageID, err)
+	}
+}
+
 // --- HTTP handlers ---
 
-func registerMessagingRoutes(client *whatsmeow.Client, store *MessageStore) {
-	http.HandleFunc("/api/messages/edit", func(w http.ResponseWriter, r *http.Request) {
+func registerMessagingRoutes(mux *http.ServeMux, client *whatsmeow.Client, store *MessageStore) {
+	mux.HandleFunc("/api/messages/edit", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, GenericResponse{Success: false, Message: "Method not allowed"})
@@ -108,11 +126,18 @@ func registerMessagingRoutes(client *whatsmeow.Client, store *MessageStore) {
 		}
 		newMsg := &waProto.Message{Conversation: proto.String(req.NewContent)}
 		edit := client.BuildEdit(chatJID, req.MessageID, newMsg)
-		if _, err := client.SendMessage(context.Background(), chatJID, edit); err != nil {
+		resp, err := client.SendMessage(context.Background(), chatJID, edit)
+		if err != nil {
 			writeJSON(http.StatusInternalServerError, GenericResponse{Success: false, Message: err.Error()})
 			return
 		}
-		// Reflect the edit locally so list_messages shows the new content.
+		// Log the edit (BR-5) and, as before, reflect our own edit locally so
+		// list_messages shows the new content. Edits received from the
+		// network never overwrite content (see handleMessage).
+		recordLocalMessageEvent(store, MessageEvent{
+			EventID: resp.ID, ChatJID: req.ChatJID, TargetMessageID: req.MessageID,
+			Type: messageEventEdit, NewContent: req.NewContent, Timestamp: resp.Timestamp, IsFromMe: true,
+		}, client)
 		_, _ = store.db.Exec(
 			`UPDATE messages SET content = ? WHERE id = ? AND chat_jid = ?`,
 			req.NewContent, req.MessageID, req.ChatJID,
@@ -120,7 +145,7 @@ func registerMessagingRoutes(client *whatsmeow.Client, store *MessageStore) {
 		writeJSON(http.StatusOK, GenericResponse{Success: true, Message: "Message edited"})
 	})
 
-	http.HandleFunc("/api/messages/delete", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/messages/delete", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, GenericResponse{Success: false, Message: "Method not allowed"})
@@ -140,10 +165,15 @@ func registerMessagingRoutes(client *whatsmeow.Client, store *MessageStore) {
 			writeJSON(http.StatusBadRequest, GenericResponse{Success: false, Message: fmt.Sprintf("Invalid chat_jid: %v", err)})
 			return
 		}
-		if _, err := client.RevokeMessage(context.Background(), chatJID, req.MessageID); err != nil {
+		resp, err := client.RevokeMessage(context.Background(), chatJID, req.MessageID)
+		if err != nil {
 			writeJSON(http.StatusInternalServerError, GenericResponse{Success: false, Message: err.Error()})
 			return
 		}
+		recordLocalMessageEvent(store, MessageEvent{
+			EventID: resp.ID, ChatJID: req.ChatJID, TargetMessageID: req.MessageID,
+			Type: messageEventRevoke, Timestamp: resp.Timestamp, IsFromMe: true,
+		}, client)
 		// Mark locally so the deleted message no longer shows up with content.
 		_, _ = store.db.Exec(
 			`UPDATE messages SET content = '' WHERE id = ? AND chat_jid = ?`,
@@ -152,7 +182,7 @@ func registerMessagingRoutes(client *whatsmeow.Client, store *MessageStore) {
 		writeJSON(http.StatusOK, GenericResponse{Success: true, Message: "Message deleted"})
 	})
 
-	http.HandleFunc("/api/messages/react", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/messages/react", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, GenericResponse{Success: false, Message: "Method not allowed"})
@@ -198,7 +228,7 @@ func registerMessagingRoutes(client *whatsmeow.Client, store *MessageStore) {
 		writeJSON(http.StatusOK, GenericResponse{Success: true, Message: msg})
 	})
 
-	http.HandleFunc("/api/messages/mark-read", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/messages/mark-read", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, GenericResponse{Success: false, Message: "Method not allowed"})
@@ -260,7 +290,7 @@ func registerMessagingRoutes(client *whatsmeow.Client, store *MessageStore) {
 		writeJSON(http.StatusOK, GenericResponse{Success: true, Message: fmt.Sprintf("Marked %d message(s) as read", len(req.MessageIDs))})
 	})
 
-	http.HandleFunc("/api/messages/typing", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/messages/typing", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, GenericResponse{Success: false, Message: "Method not allowed"})
@@ -295,7 +325,7 @@ func registerMessagingRoutes(client *whatsmeow.Client, store *MessageStore) {
 		writeJSON(http.StatusOK, GenericResponse{Success: true, Message: "Presence sent"})
 	})
 
-	http.HandleFunc("/api/messages/poll", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/messages/poll", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, GenericResponse{Success: false, Message: "Method not allowed"})
@@ -323,7 +353,7 @@ func registerMessagingRoutes(client *whatsmeow.Client, store *MessageStore) {
 		writeJSON(http.StatusOK, GenericResponse{Success: true, Message: "Poll sent"})
 	})
 
-	http.HandleFunc("/api/contacts/check", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/contacts/check", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, CheckOnWhatsAppResponse{Success: false, Message: "Method not allowed"})
@@ -358,7 +388,7 @@ func registerMessagingRoutes(client *whatsmeow.Client, store *MessageStore) {
 		writeJSON(http.StatusOK, CheckOnWhatsAppResponse{Success: true, Results: out})
 	})
 
-	http.HandleFunc("/api/chats/disappearing-timer", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/chats/disappearing-timer", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, GenericResponse{Success: false, Message: "Method not allowed"})

@@ -10,7 +10,7 @@ from whatsapp import (
     get_contact_chats as whatsapp_get_contact_chats,
     get_last_interaction as whatsapp_get_last_interaction,
     get_message_context as whatsapp_get_message_context,
-    send_message as whatsapp_send_message,
+    send_message_detailed as whatsapp_send_message_detailed,
     send_file as whatsapp_send_file,
     send_audio_message as whatsapp_audio_voice_message,
     download_media as whatsapp_download_media,
@@ -211,7 +211,8 @@ def send_message(
         reply_to_message_id: Optional WhatsApp message ID to quote in the reply
     
     Returns:
-        A dictionary containing success status and a status message
+        A dictionary containing success status, a status message and, when the
+        bridge reports them, the sent message_id and server timestamp
     """
     # Validate input
     if not recipient:
@@ -221,16 +222,12 @@ def send_message(
         }
     
     # Call the whatsapp_send_message function with the unified recipient parameter
-    success, status_message = whatsapp_send_message(
+    return whatsapp_send_message_detailed(
         recipient,
         message,
         show_typing,
         reply_to_message_id=reply_to_message_id,
     )
-    return {
-        "success": success,
-        "message": status_message
-    }
 
 @mcp.tool()
 def send_file(recipient: str, media_path: str) -> Dict[str, Any]:

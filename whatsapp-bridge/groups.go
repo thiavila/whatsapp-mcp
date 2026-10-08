@@ -222,8 +222,8 @@ func extractInviteCode(link string) string {
 
 // --- HTTP handlers ---
 
-func registerGroupRoutes(client *whatsmeow.Client) {
-	http.HandleFunc("/api/groups/create", func(w http.ResponseWriter, r *http.Request) {
+func registerGroupRoutes(mux *http.ServeMux, client *whatsmeow.Client) {
+	mux.HandleFunc("/api/groups/create", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, CreateGroupResponse{Success: false, Message: "Method not allowed"})
@@ -260,7 +260,7 @@ func registerGroupRoutes(client *whatsmeow.Client) {
 		})
 	})
 
-	http.HandleFunc("/api/groups/leave", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/groups/leave", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, GenericResponse{Success: false, Message: "Method not allowed"})
@@ -283,7 +283,7 @@ func registerGroupRoutes(client *whatsmeow.Client) {
 		writeJSON(http.StatusOK, GenericResponse{Success: true, Message: "Left group"})
 	})
 
-	http.HandleFunc("/api/groups/info", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/groups/info", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodGet {
 			writeJSON(http.StatusMethodNotAllowed, GroupInfoResponse{Success: false, Message: "Method not allowed"})
@@ -307,7 +307,7 @@ func registerGroupRoutes(client *whatsmeow.Client) {
 		writeJSON(http.StatusOK, GroupInfoResponse{Success: true, Group: groupInfoToDTO(info)})
 	})
 
-	http.HandleFunc("/api/groups/list", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/groups/list", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodGet {
 			writeJSON(http.StatusMethodNotAllowed, ListGroupsResponse{Success: false, Message: "Method not allowed"})
@@ -327,7 +327,7 @@ func registerGroupRoutes(client *whatsmeow.Client) {
 		writeJSON(http.StatusOK, ListGroupsResponse{Success: true, Groups: out})
 	})
 
-	http.HandleFunc("/api/groups/invite-link", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/groups/invite-link", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, GroupInviteLinkResponse{Success: false, Message: "Method not allowed"})
@@ -354,7 +354,7 @@ func registerGroupRoutes(client *whatsmeow.Client) {
 		})
 	})
 
-	http.HandleFunc("/api/groups/info-from-link", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/groups/info-from-link", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, GroupInfoResponse{Success: false, Message: "Method not allowed"})
@@ -374,7 +374,7 @@ func registerGroupRoutes(client *whatsmeow.Client) {
 		writeJSON(http.StatusOK, GroupInfoResponse{Success: true, Group: groupInfoToDTO(info)})
 	})
 
-	http.HandleFunc("/api/groups/join", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/groups/join", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, JoinGroupResponse{Success: false, Message: "Method not allowed"})
@@ -394,7 +394,7 @@ func registerGroupRoutes(client *whatsmeow.Client) {
 		writeJSON(http.StatusOK, JoinGroupResponse{Success: true, Message: "Joined group", GroupJID: jid.String()})
 	})
 
-	http.HandleFunc("/api/groups/participants", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/groups/participants", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, GenericResponse{Success: false, Message: "Method not allowed"})
@@ -440,7 +440,7 @@ func registerGroupRoutes(client *whatsmeow.Client) {
 		writeJSON(http.StatusOK, GenericResponse{Success: true, Message: fmt.Sprintf("Participants %s", req.Action)})
 	})
 
-	http.HandleFunc("/api/groups/name", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/groups/name", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, GenericResponse{Success: false, Message: "Method not allowed"})
@@ -463,7 +463,7 @@ func registerGroupRoutes(client *whatsmeow.Client) {
 		writeJSON(http.StatusOK, GenericResponse{Success: true, Message: "Group name updated"})
 	})
 
-	http.HandleFunc("/api/groups/description", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/groups/description", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, GenericResponse{Success: false, Message: "Method not allowed"})
@@ -486,7 +486,7 @@ func registerGroupRoutes(client *whatsmeow.Client) {
 		writeJSON(http.StatusOK, GenericResponse{Success: true, Message: "Group description updated"})
 	})
 
-	http.HandleFunc("/api/groups/photo", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/groups/photo", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, SetGroupPhotoResponse{Success: false, Message: "Method not allowed"})
@@ -522,25 +522,25 @@ func registerGroupRoutes(client *whatsmeow.Client) {
 		writeJSON(http.StatusOK, SetGroupPhotoResponse{Success: true, Message: msg, PictureID: pid})
 	})
 
-	http.HandleFunc("/api/groups/announce", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/groups/announce", func(w http.ResponseWriter, r *http.Request) {
 		setGroupBool(w, r, "announce", func(jid types.JID, v bool) error {
 			return client.SetGroupAnnounce(context.Background(), jid, v)
 		})
 	})
 
-	http.HandleFunc("/api/groups/locked", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/groups/locked", func(w http.ResponseWriter, r *http.Request) {
 		setGroupBool(w, r, "locked", func(jid types.JID, v bool) error {
 			return client.SetGroupLocked(context.Background(), jid, v)
 		})
 	})
 
-	http.HandleFunc("/api/groups/approval-mode", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/groups/approval-mode", func(w http.ResponseWriter, r *http.Request) {
 		setGroupBool(w, r, "approval mode", func(jid types.JID, v bool) error {
 			return client.SetGroupJoinApprovalMode(context.Background(), jid, v)
 		})
 	})
 
-	http.HandleFunc("/api/groups/requests", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/groups/requests", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodGet {
 			writeJSON(http.StatusMethodNotAllowed, GroupRequestsResponse{Success: false, Message: "Method not allowed"})
@@ -571,7 +571,7 @@ func registerGroupRoutes(client *whatsmeow.Client) {
 		writeJSON(http.StatusOK, GroupRequestsResponse{Success: true, Requests: out})
 	})
 
-	http.HandleFunc("/api/groups/requests/decide", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/groups/requests/decide", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON := newJSONWriter(w)
 		if r.Method != http.MethodPost {
 			writeJSON(http.StatusMethodNotAllowed, GenericResponse{Success: false, Message: "Method not allowed"})
