@@ -816,7 +816,10 @@ func TestFullHistoryDaysConfig(t *testing.T) {
 	if err != nil || cfg.FullHistoryDays != 90 {
 		t.Fatalf("flag must override env: %+v %v", cfg, err)
 	}
-	for _, bad := range []string{"-1", "abc", "99999"} {
+	if _, err := loadBridgeConfig([]string{"-full-history-days", "4294967297"}, envMap(nil)); err == nil {
+		t.Fatal("an oversized flag value must be rejected, not wrapped")
+	}
+	for _, bad := range []string{"-1", "abc", "99999", "4294967297"} {
 		if _, err := loadBridgeConfig(nil, envMap(map[string]string{"WHATSAPP_FULL_HISTORY_DAYS": bad})); err == nil {
 			t.Fatalf("WHATSAPP_FULL_HISTORY_DAYS=%q must be rejected", bad)
 		}

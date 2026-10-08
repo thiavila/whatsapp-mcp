@@ -124,18 +124,21 @@ func loadBridgeConfig(args []string, getenv func(string) string) (BridgeConfig, 
 		cfg.Instance = defaultInstance
 	}
 
+	// Validate in 64 bits before narrowing, so an oversized value cannot wrap.
+	var fullHistoryDays uint64
 	if flagSet["full-history-days"] {
-		cfg.FullHistoryDays = uint32(*fullHistoryFlag)
+		fullHistoryDays = uint64(*fullHistoryFlag)
 	} else if raw := strings.TrimSpace(getenv("WHATSAPP_FULL_HISTORY_DAYS")); raw != "" {
-		days, err := strconv.ParseUint(raw, 10, 32)
+		days, err := strconv.ParseUint(raw, 10, 64)
 		if err != nil {
 			return cfg, fmt.Errorf("WHATSAPP_FULL_HISTORY_DAYS=%q is not a non-negative number", raw)
 		}
-		cfg.FullHistoryDays = uint32(days)
+		fullHistoryDays = days
 	}
-	if cfg.FullHistoryDays > maxFullHistoryDays {
-		return cfg, fmt.Errorf("full history days %d above the maximum %d", cfg.FullHistoryDays, maxFullHistoryDays)
+	if fullHistoryDays > maxFullHistoryDays {
+		return cfg, fmt.Errorf("full history days %d above the maximum %d", fullHistoryDays, maxFullHistoryDays)
 	}
+	cfg.FullHistoryDays = uint32(fullHistoryDays)
 
 	requireToken := *requireTokenFlag
 	if !flagSet["require-token"] {
