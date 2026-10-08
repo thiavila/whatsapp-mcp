@@ -33,6 +33,13 @@ func resolveRecipient(ctx context.Context, lookup phoneLookup, recipient string)
 	if strings.Contains(recipient, "@") {
 		return parseRecipientJID(recipient)
 	}
+	// Only phone formatting is tolerated ("+", spaces, dashes, dots, parentheses).
+	// Anything else (letters, an extension like "x8") is refused instead of being
+	// glued onto the digits, which could produce a different, real number.
+	if strings.TrimLeft(recipient, "+0123456789 -.()") != "" || strings.Count(recipient, "+") > 1 ||
+		(strings.Contains(recipient, "+") && !strings.HasPrefix(recipient, "+")) {
+		return types.EmptyJID, fmt.Errorf("invalid phone number %q: only digits, spaces, dashes, dots, parentheses and a leading + are allowed", recipient)
+	}
 	digits := onlyDigits(recipient)
 	if len(digits) < 8 {
 		return types.EmptyJID, fmt.Errorf("invalid phone number %q", recipient)

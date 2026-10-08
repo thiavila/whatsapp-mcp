@@ -106,3 +106,28 @@ func TestResolveRecipientsSkipsBlanksAndStopsOnError(t *testing.T) {
 		t.Fatal("expected error for unknown number")
 	}
 }
+
+func TestResolveRecipientRejectsExtensionsAndLetters(t *testing.T) {
+	called := false
+	var lookup phoneLookup = func(ctx context.Context, phones []string) ([]types.IsOnWhatsAppResponse, error) {
+		called = true
+		return nil, nil
+	}
+	for _, bad := range []string{"+55 11 9123-4567 x8", "5511912345678ext12", "55a11912345678", "55+11912345678", "+55 11 9123-4567 #2"} {
+		if _, err := resolveRecipient(context.Background(), lookup, bad); err == nil {
+			t.Fatalf("%q must be rejected", bad)
+		}
+	}
+	if called {
+		t.Fatal("rejected input must not reach the server lookup")
+	}
+	for _, ok := range []string{"+55 (11) 91234-5678", "55.11.91234.5678"} {
+		// A failing lookup falls back to the naive JID, so valid formatting must not error.
+		var failing phoneLookup = func(ctx context.Context, phones []string) ([]types.IsOnWhatsAppResponse, error) {
+			return nil, errors.New("offline")
+		}
+		if _, err := resolveRecipient(context.Background(), failing, ok); err != nil {
+			t.Fatalf("%q is valid formatting: %v", ok, err)
+		}
+	}
+}
