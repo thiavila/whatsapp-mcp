@@ -207,6 +207,10 @@ type MessageEvent struct {
 	NewContent      string
 	Timestamp       time.Time
 	IsFromMe        bool
+	// AliasChatJIDs are other JIDs verified (through the device's LID map) to
+	// name the same 1:1 chat as ChatJID. Groups have none. The target row is
+	// only ever looked up in ChatJID or one of these, never in other chats.
+	AliasChatJIDs []string
 }
 
 const (
@@ -283,24 +287,67 @@ func (store *MessageStore) RecordMessageEvent(event MessageEvent) error {
 	if event.Type == messageEventRevoke {
 		column = "revoked_at"
 	}
-	// Keep the most recent event time. Try the event's chat first; LID/PN
-	// chat aliases can store the target under the other JID, so fall back to
-	// the message ID alone when it is unambiguous.
+	// Keep the most recent event time. Try the event's chat first, then its
+	// verified LID/PN aliases (the target may have been stored under the other
+	// JID of the same 1:1 chat). Never match by message ID alone: an ID can
+	// exist in an unrelated chat, which must not be flagged.
 	update := fmt.Sprintf(
 		`UPDATE messages SET %[1]s = CASE WHEN %[1]s IS NULL OR %[1]s < ? THEN ? ELSE %[1]s END
 		WHERE id = ? AND chat_jid = ?`, column)
-	res, err := store.db.Exec(update, event.Timestamp, event.Timestamp, event.TargetMessageID, event.ChatJID)
-	if err != nil {
-		return fmt.Errorf("flag %s: %w", column, err)
+	for _, chat := range append([]string{event.ChatJID}, event.AliasChatJIDs...) {
+		if chat == "" {
+			continue
+		}
+		res, err := store.db.Exec(update, event.Timestamp, event.Timestamp, event.TargetMessageID, chat)
+		if err != nil {
+			return fmt.Errorf("flag %s: %w", column, err)
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return nil
+		}
 	}
-	if n, _ := res.RowsAffected(); n > 0 {
+	// The target is not stored yet (events can arrive before their message,
+	// e.g. during history sync). StoreMessage applies pending events when the
+	// target is inserted.
+	return nil
+}
+
+// chatAliases returns the other JIDs that the device's LID map verifies as the
+// same 1:1 chat (LID <-> phone number). Groups and unknown mappings have none.
+func chatAliases(client *whatsmeow.Client, chatJID string) []string {
+	if client == nil || client.Store == nil || client.Store.LIDs == nil {
 		return nil
 	}
-	fallback := fmt.Sprintf(
-		`UPDATE messages SET %[1]s = CASE WHEN %[1]s IS NULL OR %[1]s < ? THEN ? ELSE %[1]s END
-		WHERE id = ? AND (SELECT COUNT(*) FROM messages WHERE id = ?) = 1`, column)
-	if _, err := store.db.Exec(fallback, event.Timestamp, event.Timestamp, event.TargetMessageID, event.TargetMessageID); err != nil {
-		return fmt.Errorf("flag %s: %w", column, err)
+	jid, err := types.ParseJID(chatJID)
+	if err != nil {
+		return nil
+	}
+	return replyChatCandidates(client, jid)[1:]
+}
+
+// reconcilePendingEvents flags a just-stored message with edit/revoke events
+// that were recorded before it existed. Runs inside the StoreMessage
+// transaction so the message never becomes visible without its flags.
+func reconcilePendingEvents(tx *sql.Tx, id, chatJID string) error {
+	for _, ev := range []struct{ eventType, column string }{
+		{messageEventEdit, "edited_at"},
+		{messageEventRevoke, "revoked_at"},
+	} {
+		stmt := fmt.Sprintf(
+			`UPDATE messages SET %[1]s = (
+				SELECT MAX(timestamp) FROM message_events
+				WHERE target_message_id = ? AND chat_jid = ? AND event_type = ?)
+			WHERE id = ? AND chat_jid = ?
+			AND (%[1]s IS NULL OR %[1]s < (
+				SELECT MAX(timestamp) FROM message_events
+				WHERE target_message_id = ? AND chat_jid = ? AND event_type = ?))`, ev.column)
+		if _, err := tx.Exec(stmt,
+			id, chatJID, ev.eventType,
+			id, chatJID,
+			id, chatJID, ev.eventType,
+		); err != nil {
+			return fmt.Errorf("reconcile %s: %w", ev.column, err)
+		}
 	}
 	return nil
 }

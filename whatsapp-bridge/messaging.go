@@ -95,6 +95,7 @@ func recordLocalMessageEvent(store *MessageStore, event MessageEvent, client *wh
 	if event.EventID == "" {
 		event.EventID = fmt.Sprintf("local-%s-%s-%d", event.Type, event.TargetMessageID, event.Timestamp.UnixNano())
 	}
+	event.AliasChatJIDs = chatAliases(client, event.ChatJID)
 	if err := store.RecordMessageEvent(event); err != nil {
 		fmt.Printf("Failed to record local %s of %s: %v\n", event.Type, event.TargetMessageID, err)
 	}

@@ -633,3 +633,136 @@ func TestRESTHandlersAreNotGlobal(t *testing.T) {
 	_ = newRESTHandler(nil, store, BridgeConfig{Instance: "a", AuthMode: authModeOff})
 	_ = newRESTHandler(nil, store, BridgeConfig{Instance: "b", AuthMode: authModeOff}) // panics on duplicate global registration
 }
+
+// --- Review fixes (Codex cross-review of PR #4) ----------------------------------------
+
+func storePlain(t *testing.T, store *MessageStore, id, chat, content string, ts time.Time) {
+	t.Helper()
+	if err := store.StoreChat(chat, "c", ts, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreMessage(id, chat, "5547999990000", content, ts, false,
+		"", "", "", nil, nil, nil, 0, MessageMeta{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func flags(t *testing.T, store *MessageStore, id, chat string) (edited, revoked sql.NullString) {
+	t.Helper()
+	if err := store.db.QueryRow(`SELECT edited_at, revoked_at FROM messages WHERE id = ? AND chat_jid = ?`, id, chat).
+		Scan(&edited, &revoked); err != nil {
+		t.Fatal(err)
+	}
+	return edited, revoked
+}
+
+func TestEventNeverFlagsMessageInUnrelatedChat(t *testing.T) {
+	store, err := NewMessageStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ts := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	groupA, groupB := "120363000000000001@g.us", "120363000000000002@g.us"
+	storePlain(t, store, "SAMEID0000000001", groupA, "oi", ts)
+
+	if err := store.RecordMessageEvent(MessageEvent{
+		EventID: "EV1", ChatJID: groupB, TargetMessageID: "SAMEID0000000001",
+		Type: messageEventRevoke, Timestamp: ts.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, revoked := flags(t, store, "SAMEID0000000001", groupA); revoked.Valid {
+		t.Fatalf("revoke in group B flagged the message in group A: %v", revoked)
+	}
+}
+
+func TestEventFlagsVerifiedAliasChat(t *testing.T) {
+	store, err := NewMessageStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ts := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	lidChat, pnChat := testLIDUser+"@lid", testPhoneUser+"@s.whatsapp.net"
+	storePlain(t, store, "ALIASID000000001", lidChat, "oi", ts)
+
+	if err := store.RecordMessageEvent(MessageEvent{
+		EventID: "EV2", ChatJID: pnChat, AliasChatJIDs: []string{lidChat}, TargetMessageID: "ALIASID000000001",
+		Type: messageEventEdit, NewContent: "oi!", Timestamp: ts.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if edited, _ := flags(t, store, "ALIASID000000001", lidChat); !edited.Valid {
+		t.Fatal("edit under the verified PN alias did not flag the LID-stored message")
+	}
+}
+
+func TestPendingEventsApplyWhenTargetArrives(t *testing.T) {
+	store, err := NewMessageStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ts := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	chat := "120363000000000003@g.us"
+	for _, ev := range []MessageEvent{
+		{EventID: "EV3", ChatJID: chat, TargetMessageID: "LATEID0000000001", Type: messageEventEdit, NewContent: "novo", Timestamp: ts.Add(time.Minute)},
+		{EventID: "EV4", ChatJID: chat, TargetMessageID: "LATEID0000000001", Type: messageEventRevoke, Timestamp: ts.Add(2 * time.Minute)},
+	} {
+		if err := store.RecordMessageEvent(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	storePlain(t, store, "LATEID0000000001", chat, "original", ts)
+
+	edited, revoked := flags(t, store, "LATEID0000000001", chat)
+	if !edited.Valid || !revoked.Valid {
+		t.Fatalf("pending events not applied on insert: edited=%v revoked=%v", edited, revoked)
+	}
+	var content string
+	if err := store.db.QueryRow(`SELECT content FROM messages WHERE id = ?`, "LATEID0000000001").Scan(&content); err != nil {
+		t.Fatal(err)
+	}
+	if content != "original" {
+		t.Fatalf("content = %q, want the original", content)
+	}
+	// An unrelated message in the same chat stays unflagged.
+	storePlain(t, store, "OTHERID000000001", chat, "outra", ts)
+	if e, r := flags(t, store, "OTHERID000000001", chat); e.Valid || r.Valid {
+		t.Fatalf("unrelated message flagged: %v %v", e, r)
+	}
+}
+
+func TestStoreDirWithURICharactersStaysIsolated(t *testing.T) {
+	base := t.TempDir()
+	ts := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	dirs := []string{"sales%31", "sales1", "a?b#c"}
+	for i, name := range dirs {
+		store, err := NewMessageStore(filepath.Join(base, name))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		storePlain(t, store, fmt.Sprintf("ISOID%011d", i), fmt.Sprintf("12036300000000001%d@g.us", i), name, ts)
+		store.Close()
+	}
+	for i, name := range dirs {
+		if _, err := os.Stat(filepath.Join(base, name, "messages.db")); err != nil {
+			t.Fatalf("messages.db not created under the literal directory %q: %v", name, err)
+		}
+		store, err := NewMessageStore(filepath.Join(base, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var n int
+		if err := store.db.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		var content string
+		_ = store.db.QueryRow(`SELECT content FROM messages`).Scan(&content)
+		store.Close()
+		if n != 1 || content != name {
+			t.Fatalf("store %q (#%d) sees %d messages (%q): instances are not isolated", name, i, n, content)
+		}
+	}
+}

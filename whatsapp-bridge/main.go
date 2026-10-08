@@ -14,6 +14,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -77,9 +78,17 @@ type Chat struct {
 	UnreadCount int32
 }
 
-// sqliteDSN builds a go-sqlite3 DSN for a database file inside dir.
+// sqliteDSN builds a go-sqlite3 DSN for a database file inside dir. The path is
+// made absolute and percent-escaped so that '%', '?' and '#' in a store
+// directory stay part of the file name instead of being read as URI syntax
+// (otherwise "sales%31" and "sales1" would open the same database).
 func sqliteDSN(dir, name string) string {
-	return "file:" + filepath.Join(dir, name) + "?_foreign_keys=on"
+	path := filepath.Join(dir, name)
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	return u.String() + "?_foreign_keys=on"
 }
 
 // Initialize message store in dir (the historical default is "store").
@@ -174,7 +183,13 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 		return nil
 	}
 
-	_, err := store.db.Exec(
+	tx, err := store.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(
 		`INSERT INTO messages
 		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length, is_read,
 		 sender_jid, sender_alt_jid, push_name, mentioned_jids, quoted_message_id, is_forwarded)
@@ -202,7 +217,14 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 		nullableString(meta.SenderJID), nullableString(meta.SenderAltJID), nullableString(meta.PushName),
 		meta.mentionedJSON(), nullableString(meta.QuotedMessageID), meta.IsForwarded,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	// Edits/revocations can arrive before their target (BR-5).
+	if err := reconcilePendingEvents(tx, id, chatJID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Get messages from a chat
@@ -809,6 +831,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	// Edits and revocations are logged as events and never overwrite the
 	// original message content (BR-5).
 	if event, ok := protocolMessageEvent(msg.Info, msg.Message); ok {
+		event.AliasChatJIDs = chatAliases(client, event.ChatJID)
 		if err := messageStore.RecordMessageEvent(event); err != nil {
 			logger.Warnf("Failed to record %s of message %s: %v", event.Type, event.TargetMessageID, err)
 		} else {
