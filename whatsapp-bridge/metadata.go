@@ -308,7 +308,24 @@ func (store *MessageStore) RecordMessageEvent(event MessageEvent) error {
 	}
 	// The target is not stored yet (events can arrive before their message,
 	// e.g. during history sync). StoreMessage applies pending events when the
-	// target is inserted.
+	// target is inserted, looking only in the target's own chat_jid. The target
+	// may later be stored under a verified alias of this chat, so the pending
+	// event is also recorded under each alias (same event_id; the primary key is
+	// event_id + chat_jid, so redelivery stays idempotent).
+	for _, alias := range event.AliasChatJIDs {
+		if alias == "" || alias == event.ChatJID {
+			continue
+		}
+		if _, err := store.db.Exec(
+			`INSERT OR IGNORE INTO message_events
+			(event_id, chat_jid, target_message_id, event_type, sender_jid, new_content, timestamp, is_from_me)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			event.EventID, alias, event.TargetMessageID, event.Type,
+			nullableString(event.SenderJID), nullableString(event.NewContent), event.Timestamp, event.IsFromMe,
+		); err != nil {
+			return fmt.Errorf("store pending alias event: %w", err)
+		}
+	}
 	return nil
 }
 

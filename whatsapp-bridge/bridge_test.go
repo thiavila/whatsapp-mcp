@@ -766,3 +766,35 @@ func TestStoreDirWithURICharactersStaysIsolated(t *testing.T) {
 		}
 	}
 }
+
+func TestPendingEventsFollowVerifiedAliasAcrossReopen(t *testing.T) {
+	lid, pn := testLIDUser+"@lid", testPhoneUser+"@s.whatsapp.net"
+	ts := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct{ eventChat, alias, targetChat string }{
+		{pn, lid, lid}, // event under PN, target later stored under LID
+		{lid, pn, pn},  // and the reverse
+	} {
+		dir := t.TempDir()
+		store, err := NewMessageStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.RecordMessageEvent(MessageEvent{
+			EventID: "EVALIAS1", ChatJID: tc.eventChat, AliasChatJIDs: []string{tc.alias},
+			TargetMessageID: "ALIASPENDING0001", Type: messageEventRevoke, Timestamp: ts.Add(time.Minute),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		store.Close()
+
+		store, err = NewMessageStore(dir) // pending events survive a restart
+		if err != nil {
+			t.Fatal(err)
+		}
+		storePlain(t, store, "ALIASPENDING0001", tc.targetChat, "original", ts)
+		if _, revoked := flags(t, store, "ALIASPENDING0001", tc.targetChat); !revoked.Valid {
+			t.Fatalf("event under %s did not flag target stored later under alias %s", tc.eventChat, tc.targetChat)
+		}
+		store.Close()
+	}
+}
