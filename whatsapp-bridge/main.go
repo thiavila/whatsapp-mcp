@@ -1660,6 +1660,10 @@ func main() {
 		logger.Errorf("Failed to create WhatsApp client")
 		return
 	}
+	// Without this, the full app-state sync done right after pairing emits no
+	// events, so WhatsApp Business labels (and their chat/message associations)
+	// were never stored; only later incremental changes reached the database.
+	client.EmitAppStateEventsOnFullSync = true
 
 	if cfg.Logout {
 		if client.Store.ID == nil {
@@ -1782,6 +1786,9 @@ func main() {
 	}
 
 	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
+
+	// One-time label backfill for sessions paired before labels were captured.
+	go backfillLabelsIfEmpty(client, messageStore, logger)
 
 	// Start REST API server
 	if _, _, err := startRESTServer(client, messageStore, cfg); err != nil {
