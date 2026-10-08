@@ -184,29 +184,6 @@ func groupInfoToDTO(g *types.GroupInfo) *GroupInfoDTO {
 	return dto
 }
 
-// parseJIDList canonicalises a list of JID-or-phone-number strings.
-func parseJIDList(raw []string) ([]types.JID, error) {
-	out := make([]types.JID, 0, len(raw))
-	for _, s := range raw {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			continue
-		}
-		if strings.Contains(s, "@") {
-			j, err := types.ParseJID(s)
-			if err != nil {
-				return nil, fmt.Errorf("invalid JID %q: %v", s, err)
-			}
-			out = append(out, j)
-		} else {
-			// Strip a leading "+" if present so types.JID validates.
-			s = strings.TrimPrefix(s, "+")
-			out = append(out, types.JID{User: s, Server: types.DefaultUserServer})
-		}
-	}
-	return out, nil
-}
-
 // extractInviteCode pulls the trailing code from a wa.me/chat.whatsapp.com URL.
 func extractInviteCode(link string) string {
 	link = strings.TrimSpace(link)
@@ -238,7 +215,7 @@ func registerGroupRoutes(mux *http.ServeMux, client *whatsmeow.Client) {
 			writeJSON(http.StatusBadRequest, CreateGroupResponse{Success: false, Message: "name is required"})
 			return
 		}
-		participants, err := parseJIDList(req.Participants)
+		participants, err := resolveRecipients(r.Context(), client.IsOnWhatsApp, req.Participants)
 		if err != nil {
 			writeJSON(http.StatusBadRequest, CreateGroupResponse{Success: false, Message: err.Error()})
 			return
@@ -428,7 +405,7 @@ func registerGroupRoutes(mux *http.ServeMux, client *whatsmeow.Client) {
 			writeJSON(http.StatusBadRequest, GenericResponse{Success: false, Message: err.Error()})
 			return
 		}
-		participants, err := parseJIDList(req.Participants)
+		participants, err := resolveRecipients(r.Context(), client.IsOnWhatsApp, req.Participants)
 		if err != nil {
 			writeJSON(http.StatusBadRequest, GenericResponse{Success: false, Message: err.Error()})
 			return
@@ -587,7 +564,7 @@ func registerGroupRoutes(mux *http.ServeMux, client *whatsmeow.Client) {
 			writeJSON(http.StatusBadRequest, GenericResponse{Success: false, Message: err.Error()})
 			return
 		}
-		participants, err := parseJIDList(req.Participants)
+		participants, err := resolveRecipients(r.Context(), client.IsOnWhatsApp, req.Participants)
 		if err != nil {
 			writeJSON(http.StatusBadRequest, GenericResponse{Success: false, Message: err.Error()})
 			return

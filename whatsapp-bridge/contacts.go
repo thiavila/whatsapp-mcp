@@ -111,7 +111,7 @@ func registerContactRoutes(mux *http.ServeMux, client *whatsmeow.Client) {
 			writeJSON(http.StatusBadRequest, UserInfoResponse{Success: false, Message: "jids is required"})
 			return
 		}
-		jids, err := parseJIDList(req.JIDs)
+		jids, err := resolveRecipients(r.Context(), client.IsOnWhatsApp, req.JIDs)
 		if err != nil {
 			writeJSON(http.StatusBadRequest, UserInfoResponse{Success: false, Message: err.Error()})
 			return

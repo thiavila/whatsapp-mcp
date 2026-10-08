@@ -1330,6 +1330,18 @@ func newRESTHandler(client *whatsmeow.Client, messageStore *MessageStore, cfg Br
 			http.Error(w, "Message or media path is required", http.StatusBadRequest)
 			return
 		}
+
+		// Phone numbers go through the server lookup (see resolveRecipient): the JID
+		// isn't always the digits as typed, e.g. Brazilian numbers without the 9.
+		recipientJID, err := resolveRecipient(r.Context(), client.IsOnWhatsApp, req.Recipient)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(SendMessageResponse{Success: false, Message: err.Error()})
+			return
+		}
+		req.Recipient = recipientJID.String()
+
 		if req.ReplyToMessageID != "" {
 			recipientJID, err := parseRecipientJID(req.Recipient)
 			if err != nil {
