@@ -1,3 +1,4 @@
+import os
 from typing import List, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
 from transcription import transcribe_audio_file
@@ -56,9 +57,12 @@ from whatsapp import (
 )
 
 # Initialize FastMCP server
+# As tools usam structured_output=False: desde o mcp 1.10 o FastMCP valida a saída
+# pelo tipo de retorno, e várias devolvem dataclasses anotadas como Dict. Assim a
+# resposta continua sendo o texto serializado de sempre.
 mcp = FastMCP("whatsapp")
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def search_contacts(query: str) -> List[Dict[str, Any]]:
     """Search WhatsApp contacts by name or phone number.
     
@@ -68,7 +72,7 @@ def search_contacts(query: str) -> List[Dict[str, Any]]:
     contacts = whatsapp_search_contacts(query)
     return contacts
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def list_messages(
     after: Optional[str] = None,
     before: Optional[str] = None,
@@ -109,7 +113,7 @@ def list_messages(
     )
     return messages
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def list_chats(
     query: Optional[str] = None,
     limit: int = 20,
@@ -135,7 +139,7 @@ def list_chats(
     )
     return chats
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]:
     """Get WhatsApp chat metadata by phone number or JID.
     
@@ -146,7 +150,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]
     chat = whatsapp_get_chat(chat_jid, include_last_message)
     return chat
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
     """Get direct-chat metadata by phone number, resolving its PN/LID aliases.
     
@@ -156,7 +160,7 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
     chat = whatsapp_get_direct_chat_by_contact(sender_phone_number)
     return chat
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str, Any]]:
     """Get all WhatsApp chats involving the contact across PN/LID aliases.
     
@@ -168,7 +172,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str
     chats = whatsapp_get_contact_chats(jid, limit, page)
     return chats
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_last_interaction(jid: str) -> str:
     """Get the most recent WhatsApp message across the contact's PN/LID aliases.
     
@@ -178,7 +182,7 @@ def get_last_interaction(jid: str) -> str:
     message = whatsapp_get_last_interaction(jid)
     return message
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_message_context(
     message_id: str,
     before: int = 5,
@@ -194,7 +198,7 @@ def get_message_context(
     context = whatsapp_get_message_context(message_id, before, after)
     return context
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def send_message(
     recipient: str,
     message: str,
@@ -229,7 +233,7 @@ def send_message(
         reply_to_message_id=reply_to_message_id,
     )
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def send_file(recipient: str, media_path: str) -> Dict[str, Any]:
     """Send a file such as a picture, raw audio, video or document via WhatsApp to the specified recipient. For group messages use the JID.
     
@@ -249,7 +253,7 @@ def send_file(recipient: str, media_path: str) -> Dict[str, Any]:
         "message": status_message
     }
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
     """Send any audio file as a WhatsApp audio message to the specified recipient. For group messages use the JID. If it errors due to ffmpeg not being installed, use send_file instead.
     
@@ -267,7 +271,7 @@ def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
         "message": status_message
     }
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
     """Download media from a WhatsApp message and get the local file path.
     
@@ -293,7 +297,7 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
         }
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def transcribe_audio(
     message_id: str,
     chat_jid: str,
@@ -336,7 +340,7 @@ def transcribe_audio(
         **result,
     }
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def edit_message(chat_jid: str, message_id: str, new_content: str) -> Dict[str, Any]:
     """Edit a message you previously sent. WhatsApp only allows edits within ~20 minutes.
 
@@ -349,7 +353,7 @@ def edit_message(chat_jid: str, message_id: str, new_content: str) -> Dict[str, 
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def delete_message(chat_jid: str, message_id: str) -> Dict[str, Any]:
     """Delete (revoke for everyone) a message you sent.
 
@@ -361,7 +365,7 @@ def delete_message(chat_jid: str, message_id: str) -> Dict[str, Any]:
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def react_to_message(
     chat_jid: str,
     message_id: str,
@@ -387,7 +391,7 @@ def react_to_message(
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def mark_messages_read(
     chat_jid: str, message_ids: List[str], sender_jid: str = ""
 ) -> Dict[str, Any]:
@@ -402,7 +406,7 @@ def mark_messages_read(
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def send_typing_indicator(
     chat_jid: str, is_typing: bool = True, is_recording_audio: bool = False
 ) -> Dict[str, Any]:
@@ -419,7 +423,7 @@ def send_typing_indicator(
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def create_poll(
     chat_jid: str,
     name: str,
@@ -438,7 +442,7 @@ def create_poll(
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def check_phones_on_whatsapp(phones: List[str]) -> List[Dict[str, Any]]:
     """Check which phone numbers are registered on WhatsApp.
 
@@ -451,7 +455,7 @@ def check_phones_on_whatsapp(phones: List[str]) -> List[Dict[str, Any]]:
     return whatsapp_check_phones_on_whatsapp(phones)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def set_disappearing_timer(chat_jid: str, timer: str) -> Dict[str, Any]:
     """Set disappearing messages timer for a chat.
 
@@ -463,7 +467,7 @@ def set_disappearing_timer(chat_jid: str, timer: str) -> Dict[str, Any]:
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def create_group(name: str, participants: List[str]) -> Dict[str, Any]:
     """Create a new WhatsApp group with the given participants.
 
@@ -477,14 +481,14 @@ def create_group(name: str, participants: List[str]) -> Dict[str, Any]:
     return whatsapp_create_group(name, participants)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def leave_group(chat_jid: str) -> Dict[str, Any]:
     """Leave a group chat."""
     success, message = whatsapp_leave_group(chat_jid)
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_group_info(chat_jid: str) -> Dict[str, Any]:
     """Get full metadata for a group: participants, admins, settings, description.
 
@@ -494,13 +498,13 @@ def get_group_info(chat_jid: str) -> Dict[str, Any]:
     return whatsapp_get_group_info(chat_jid)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def list_joined_groups() -> Dict[str, Any]:
     """List all groups the linked WhatsApp account belongs to, with full metadata."""
     return whatsapp_list_joined_groups()
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_group_invite_link(chat_jid: str, reset: bool = False) -> Dict[str, Any]:
     """Get the invite link for a group (admins only).
 
@@ -511,7 +515,7 @@ def get_group_invite_link(chat_jid: str, reset: bool = False) -> Dict[str, Any]:
     return whatsapp_get_group_invite_link(chat_jid, reset)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_group_info_from_link(link: str) -> Dict[str, Any]:
     """Look up a group's info from an invite link WITHOUT joining.
 
@@ -521,7 +525,7 @@ def get_group_info_from_link(link: str) -> Dict[str, Any]:
     return whatsapp_get_group_info_from_link(link)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def join_group_with_link(link: str) -> Dict[str, Any]:
     """Join a group via an invite link.
 
@@ -531,7 +535,7 @@ def join_group_with_link(link: str) -> Dict[str, Any]:
     return whatsapp_join_group_with_link(link)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def update_group_participants(chat_jid: str, participants: List[str], action: str) -> Dict[str, Any]:
     """Add, remove, promote, or demote participants in a group (admins only).
 
@@ -544,21 +548,21 @@ def update_group_participants(chat_jid: str, participants: List[str], action: st
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def set_group_name(chat_jid: str, name: str) -> Dict[str, Any]:
     """Rename a group (admin or anyone, depending on group lock setting)."""
     success, message = whatsapp_set_group_name(chat_jid, name)
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def set_group_description(chat_jid: str, description: str) -> Dict[str, Any]:
     """Update a group's description (the text below the group name in WhatsApp UI)."""
     success, message = whatsapp_set_group_description(chat_jid, description)
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def set_group_photo(chat_jid: str, photo_path: str) -> Dict[str, Any]:
     """Set or remove a group's photo.
 
@@ -569,34 +573,34 @@ def set_group_photo(chat_jid: str, photo_path: str) -> Dict[str, Any]:
     return whatsapp_set_group_photo(chat_jid, photo_path)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def set_group_announce_only(chat_jid: str, announce_only: bool) -> Dict[str, Any]:
     """Restrict messaging to admins (True) or allow everyone (False)."""
     success, message = whatsapp_set_group_announce(chat_jid, announce_only)
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def set_group_locked(chat_jid: str, locked: bool) -> Dict[str, Any]:
     """Restrict group info editing to admins (True) or allow everyone (False)."""
     success, message = whatsapp_set_group_locked(chat_jid, locked)
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def set_group_join_approval_required(chat_jid: str, required: bool) -> Dict[str, Any]:
     """Require admin approval before new members can join (True), or allow anyone with the link (False)."""
     success, message = whatsapp_set_group_join_approval_mode(chat_jid, required)
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_group_join_requests(chat_jid: str) -> List[Dict[str, str]]:
     """List pending join requests for a group with approval-required mode on."""
     return whatsapp_get_group_join_requests(chat_jid)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def decide_group_join_requests(
     chat_jid: str, participants: List[str], approve: bool
 ) -> Dict[str, Any]:
@@ -611,7 +615,7 @@ def decide_group_join_requests(
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_user_info(jids: List[str]) -> List[Dict[str, Any]]:
     """Get full user info: status message, profile picture ID, devices, verified business name.
 
@@ -621,7 +625,7 @@ def get_user_info(jids: List[str]) -> List[Dict[str, Any]]:
     return whatsapp_get_user_info(jids)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_profile_picture(jid: str, preview: bool = False) -> Dict[str, Any]:
     """Get a downloadable URL for a user or group profile picture.
 
@@ -632,40 +636,40 @@ def get_profile_picture(jid: str, preview: bool = False) -> Dict[str, Any]:
     return whatsapp_get_profile_picture(jid, preview)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_business_profile(jid: str) -> Dict[str, Any]:
     """Get business profile info (address, email, categories, hours) for a Business contact."""
     return whatsapp_get_business_profile(jid)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_blocklist() -> List[str]:
     """List all currently blocked contact JIDs."""
     return whatsapp_get_blocklist()
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def block_contact(jid: str) -> Dict[str, Any]:
     """Block a contact (they can no longer message or call you)."""
     success, message = whatsapp_block_contact(jid, block=True)
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def unblock_contact(jid: str) -> Dict[str, Any]:
     """Unblock a previously blocked contact."""
     success, message = whatsapp_block_contact(jid, block=False)
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def set_status_message(message: str) -> Dict[str, Any]:
     """Update your own "About" / status message (the text shown under your name in your profile)."""
     success, message_text = whatsapp_set_status_message(message)
     return {"success": success, "message": message_text}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def set_privacy_setting(setting_type: str, value: str) -> Dict[str, Any]:
     """Update a privacy setting.
 
@@ -679,7 +683,7 @@ def set_privacy_setting(setting_type: str, value: str) -> Dict[str, Any]:
     return {"success": success, "message": msg}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def resolve_business_link(link: str) -> Dict[str, Any]:
     """Resolve a wa.me/p/<code> business link into JID, business name, and pre-filled greeting.
 
@@ -689,7 +693,7 @@ def resolve_business_link(link: str) -> Dict[str, Any]:
     return whatsapp_resolve_business_link(link)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def list_labels(include_deleted: bool = False) -> List[Dict[str, Any]]:
     """List WhatsApp Business labels (the colored tags) known to the bridge.
 
@@ -702,7 +706,7 @@ def list_labels(include_deleted: bool = False) -> List[Dict[str, Any]]:
     return whatsapp_list_labels(include_deleted)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_chats_with_label(label_id: str) -> List[str]:
     """List chat JIDs currently tagged with the given label.
 
@@ -712,7 +716,7 @@ def get_chats_with_label(label_id: str) -> List[str]:
     return whatsapp_get_chats_with_label(label_id)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_messages_with_label(label_id: str) -> List[Dict[str, str]]:
     """List {chat_jid, message_id} pairs currently tagged with the given label.
 
@@ -722,7 +726,7 @@ def get_messages_with_label(label_id: str) -> List[Dict[str, str]]:
     return whatsapp_get_messages_with_label(label_id)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def create_label(name: str, color: int = 0) -> Dict[str, Any]:
     """Create a new WhatsApp Business label.
 
@@ -739,7 +743,7 @@ def create_label(name: str, color: int = 0) -> Dict[str, Any]:
     return {"success": success, "message": message, "label_id": label_id}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def edit_label(label_id: str, name: str, color: int = 0) -> Dict[str, Any]:
     """Edit an existing label's name or color.
 
@@ -754,7 +758,7 @@ def edit_label(label_id: str, name: str, color: int = 0) -> Dict[str, Any]:
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def delete_label(label_id: str) -> Dict[str, Any]:
     """Delete (tombstone) a label across all linked devices.
 
@@ -767,7 +771,7 @@ def delete_label(label_id: str) -> Dict[str, Any]:
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def add_label_to_chat(label_id: str, chat_jid: str) -> Dict[str, Any]:
     """Tag a chat with a label.
 
@@ -779,7 +783,7 @@ def add_label_to_chat(label_id: str, chat_jid: str) -> Dict[str, Any]:
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def remove_label_from_chat(label_id: str, chat_jid: str) -> Dict[str, Any]:
     """Untag a chat (remove a label).
 
@@ -791,7 +795,7 @@ def remove_label_from_chat(label_id: str, chat_jid: str) -> Dict[str, Any]:
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def add_label_to_message(label_id: str, chat_jid: str, message_id: str) -> Dict[str, Any]:
     """Tag a specific message with a label.
 
@@ -804,7 +808,7 @@ def add_label_to_message(label_id: str, chat_jid: str, message_id: str) -> Dict[
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def remove_label_from_message(label_id: str, chat_jid: str, message_id: str) -> Dict[str, Any]:
     """Untag a specific message.
 
@@ -817,7 +821,7 @@ def remove_label_from_message(label_id: str, chat_jid: str, message_id: str) -> 
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_unread_messages(limit: int = 10) -> List[Dict[str, Any]]:
     """Get an overview of recent chats with unread messages.
     
@@ -831,5 +835,15 @@ def get_unread_messages(limit: int = 10) -> List[Dict[str, Any]]:
     return unread_chats
 
 if __name__ == "__main__":
-    # Initialize and run the server
-    mcp.run(transport='stdio')
+    # MCP_TRANSPORT=stdio (padrão): um processo por cliente, como sempre foi.
+    # MCP_TRANSPORT=http: um processo só, de longa duração, servindo vários
+    # clientes por streamable HTTP em MCP_HOST:MCP_PORT/mcp.
+    transport = os.getenv("MCP_TRANSPORT", "stdio").lower()
+    if transport == "http":
+        mcp.settings.host = os.getenv("MCP_HOST", "127.0.0.1")
+        mcp.settings.port = int(os.getenv("MCP_PORT", "8782"))
+        mcp.run(transport="streamable-http")
+    elif transport == "stdio":
+        mcp.run(transport="stdio")
+    else:
+        raise SystemExit(f"MCP_TRANSPORT inválido: {transport!r} (use stdio ou http)")
