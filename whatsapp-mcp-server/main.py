@@ -90,11 +90,13 @@ def tool(fn):
     """
     @functools.wraps(fn)
     async def run_in_thread(*args, **kwargs):
-        result = await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
-        # run_sync segura o cancelamento até a thread terminar; se o cliente
-        # cancelou nesse meio-tempo, o SDK já respondeu e não pode responder de novo.
-        await anyio.lowlevel.checkpoint_if_cancelled()
-        return result
+        try:
+            return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+        finally:
+            # run_sync segura o cancelamento até a thread terminar; se o cliente
+            # cancelou nesse meio-tempo, o SDK já respondeu e não pode responder
+            # de novo, nem com o resultado nem com um erro da tool.
+            await anyio.lowlevel.checkpoint_if_cancelled()
 
     return mcp.tool(structured_output=False)(run_in_thread)
 
