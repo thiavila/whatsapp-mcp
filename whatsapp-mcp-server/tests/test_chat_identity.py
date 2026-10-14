@@ -101,6 +101,15 @@ class ChatIdentityTests(unittest.TestCase):
         self.assertEqual(from_phone.canonical_jid, PHONE_JID)
         self.assertEqual(from_phone.aliases, (PHONE_JID, LID_JID))
 
+    def test_list_chats_without_last_message(self):
+        with_last = whatsapp.list_chats(limit=10)
+        without_last = whatsapp.list_chats(limit=10, include_last_message=False)
+
+        self.assertEqual([c.jid for c in without_last], [c.jid for c in with_last])
+        self.assertEqual([c.jid for c in without_last], [LID_JID, PHONE_JID])
+        self.assertEqual(with_last[0].last_message, "A entrega fica 15, total 175")
+        self.assertTrue(all(c.last_message is None for c in without_last))
+
     def test_list_messages_by_phone_includes_lid_replies(self):
         output = whatsapp.list_messages(
             chat_jid=PHONE,

@@ -3,7 +3,9 @@ import os
 from typing import List, Dict, Any, Optional
 
 import anyio
+import anyio.lowlevel
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from transcription import transcribe_audio_file
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
@@ -59,12 +61,21 @@ from whatsapp import (
     resolve_business_link as whatsapp_resolve_business_link,
 )
 
-# Initialize FastMCP server. Host/porta só valem com MCP_TRANSPORT=http; passá-los
-# no construtor faz o FastMCP montar a proteção de Host/Origin para o endereço certo.
+# Initialize FastMCP server. Host/porta só valem com MCP_TRANSPORT=http.
+# Em loopback o próprio FastMCP liga a proteção de Host/Origin (DNS rebinding);
+# para outro endereço ele a deixa desligada, então a configuramos explicitamente.
+MCP_HOST = os.getenv("MCP_HOST", "127.0.0.1")
+MCP_PORT = int(os.getenv("MCP_PORT", "8782"))
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 mcp = FastMCP(
     "whatsapp",
-    host=os.getenv("MCP_HOST", "127.0.0.1"),
-    port=int(os.getenv("MCP_PORT", "8782")),
+    host=MCP_HOST,
+    port=MCP_PORT,
+    transport_security=None if MCP_HOST in LOOPBACK_HOSTS else TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[MCP_HOST, f"{MCP_HOST}:{MCP_PORT}"],
+        allowed_origins=[f"http://{MCP_HOST}", f"http://{MCP_HOST}:{MCP_PORT}"],
+    ),
 )
 
 
@@ -79,7 +90,11 @@ def tool(fn):
     """
     @functools.wraps(fn)
     async def run_in_thread(*args, **kwargs):
-        return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+        result = await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+        # run_sync segura o cancelamento até a thread terminar; se o cliente
+        # cancelou nesse meio-tempo, o SDK já respondeu e não pode responder de novo.
+        await anyio.lowlevel.checkpoint_if_cancelled()
+        return result
 
     return mcp.tool(structured_output=False)(run_in_thread)
 
