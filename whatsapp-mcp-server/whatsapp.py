@@ -70,13 +70,33 @@ def bridge_headers() -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+# (connect, read) seconds for bridge calls. Without a timeout a hung bridge
+# keeps the tool's worker thread blocked forever, and enough of them exhaust the
+# pool. The bridge only answers once WhatsApp has, so the read timeout covers the
+# whole call: whatsmeow alone waits up to 75 s for a send acknowledgement, and
+# media uploads and downloads get longer still.
+BRIDGE_TIMEOUT = (5, 120)
+BRIDGE_MEDIA_TIMEOUT = (5, 300)
+
+
+def _request_error(e: requests.RequestException) -> str:
+    # The bridge keeps working after the client gives up, so a timed-out action
+    # may still go through; retrying blindly could, for instance, send twice.
+    if isinstance(e, requests.Timeout):
+        return (f"Request error: the bridge did not answer in time ({e}). "
+                "The action may still have been applied; check (e.g. list_messages) before retrying.")
+    return f"Request error: {str(e)}"
+
+
 def _bridge_post(url: str, **kwargs):
     headers = {**bridge_headers(), **kwargs.pop("headers", {})}
+    kwargs.setdefault("timeout", BRIDGE_TIMEOUT)
     return requests.post(url, headers=headers, **kwargs)
 
 
 def _bridge_get(url: str, **kwargs):
     headers = {**bridge_headers(), **kwargs.pop("headers", {})}
+    kwargs.setdefault("timeout", BRIDGE_TIMEOUT)
     return requests.get(url, headers=headers, **kwargs)
 
 TYPING_CHARS_PER_SECOND = 12.0
@@ -933,7 +953,7 @@ def send_message_detailed(
             return _send_result(False, _http_error(response))
             
     except requests.RequestException as e:
-        return _send_result(False, f"Request error: {str(e)}")
+        return _send_result(False, _request_error(e))
     except json.JSONDecodeError:
         return _send_result(False, f"Error parsing response: {response.text}")
     except Exception as e:
@@ -961,7 +981,7 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
         
-        response = _bridge_post(url, json=payload)
+        response = _bridge_post(url, json=payload, timeout=BRIDGE_MEDIA_TIMEOUT)
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -974,7 +994,7 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
             return False, _http_error(response)
             
     except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+        return False, _request_error(e)
     except json.JSONDecodeError:
         return False, f"Error parsing response: {response.text}"
     except Exception as e:
@@ -1004,7 +1024,7 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
         
-        response = _bridge_post(url, json=payload)
+        response = _bridge_post(url, json=payload, timeout=BRIDGE_MEDIA_TIMEOUT)
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -1017,7 +1037,7 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
             return False, _http_error(response)
             
     except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+        return False, _request_error(e)
     except json.JSONDecodeError:
         return False, f"Error parsing response: {response.text}"
     except Exception as e:
@@ -1040,7 +1060,7 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
             "chat_jid": chat_jid
         }
         
-        response = _bridge_post(url, json=payload)
+        response = _bridge_post(url, json=payload, timeout=BRIDGE_MEDIA_TIMEOUT)
         
         if response.status_code == 200:
             result = response.json()
@@ -1056,7 +1076,7 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
             return None
             
     except requests.RequestException as e:
-        print(f"Request error: {str(e)}")
+        print(_request_error(e))
         return None
     except json.JSONDecodeError:
         print(f"Error parsing response: {response.text}")
@@ -1106,7 +1126,7 @@ def _post_simple(path: str, payload: Dict[str, Any]) -> Tuple[bool, str]:
         result = response.json()
         return bool(result.get("success", False)), result.get("message", "Unknown response")
     except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+        return False, _request_error(e)
     except json.JSONDecodeError:
         return False, f"Error parsing response: {response.text}"
 
@@ -1393,7 +1413,7 @@ def upsert_label(label_id: str, name: str, color: int, deleted: bool) -> Tuple[b
             result.get("label_id"),
         )
     except requests.RequestException as e:
-        return False, f"Request error: {str(e)}", None
+        return False, _request_error(e), None
     except json.JSONDecodeError:
         return False, f"Error parsing response: {response.text}", None
 
@@ -1407,7 +1427,7 @@ def label_chat(label_id: str, chat_jid: str, labeled: bool) -> Tuple[bool, str]:
         result = response.json()
         return bool(result.get("success", False)), result.get("message", "Unknown response")
     except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+        return False, _request_error(e)
     except json.JSONDecodeError:
         return False, f"Error parsing response: {response.text}"
 
@@ -1426,7 +1446,7 @@ def label_message(label_id: str, chat_jid: str, message_id: str, labeled: bool) 
         result = response.json()
         return bool(result.get("success", False)), result.get("message", "Unknown response")
     except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+        return False, _request_error(e)
     except json.JSONDecodeError:
         return False, f"Error parsing response: {response.text}"
 

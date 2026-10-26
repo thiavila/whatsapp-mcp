@@ -83,13 +83,22 @@ type Chat struct {
 // made absolute and percent-escaped so that '%', '?' and '#' in a store
 // directory stay part of the file name instead of being read as URI syntax
 // (otherwise "sales%31" and "sales1" would open the same database).
+//
+// Both databases are written by the bridge while the MCP server reads them, so
+// they run in WAL mode (readers never block the writer) with a busy timeout
+// (a locked database waits instead of failing at once). Transactions take the
+// write lock up front (_txlock=immediate) so a read-then-write transaction is
+// never refused mid-way with SQLITE_BUSY, which the busy timeout cannot retry.
+// go-sqlite3 defaults to synchronous=NORMAL, which in WAL mode skips the sync
+// on commit; FULL keeps every committed Signal session update across a power
+// loss or OS crash.
 func sqliteDSN(dir, name string) string {
 	path := filepath.Join(dir, name)
 	if abs, err := filepath.Abs(path); err == nil {
 		path = abs
 	}
 	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
-	return u.String() + "?_foreign_keys=on"
+	return u.String() + "?_foreign_keys=on&_busy_timeout=10000&_journal_mode=WAL&_synchronous=FULL&_txlock=immediate"
 }
 
 // Initialize message store in dir (the historical default is "store").

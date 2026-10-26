@@ -842,3 +842,73 @@ func TestApplyFullHistorySync(t *testing.T) {
 		t.Fatal("existing HistorySyncConfig fields must be preserved")
 	}
 }
+
+// --- SQLite concurrency: the MCP server reads while the bridge writes --------
+
+func TestMessageStoreUsesWALAndBusyTimeout(t *testing.T) {
+	store, err := NewMessageStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	var mode string
+	if err := store.db.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "wal" {
+		t.Fatalf("journal_mode = %q, want wal", mode)
+	}
+	var timeout int
+	if err := store.db.QueryRow("PRAGMA busy_timeout").Scan(&timeout); err != nil {
+		t.Fatal(err)
+	}
+	if timeout < 5000 {
+		t.Fatalf("busy_timeout = %d, want at least 5000", timeout)
+	}
+	var synchronous int
+	if err := store.db.QueryRow("PRAGMA synchronous").Scan(&synchronous); err != nil {
+		t.Fatal(err)
+	}
+	if synchronous != 2 {
+		t.Fatalf("synchronous = %d, want 2 (FULL)", synchronous)
+	}
+}
+
+func TestOpenReadTransactionDoesNotBlockBridgeWrites(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewMessageStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.StoreChat(testGroupJID, "g", time.Now(), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// A reader the way the MCP server opens the file: plain path, default settings.
+	reader, err := sql.Open("sqlite3", filepath.Join(dir, "messages.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	tx, err := reader.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	var n int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM chats").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	err = store.StoreMessage("MSG1", testGroupJID, testLIDUser, "hello", time.Now(), false,
+		"", "", "", nil, nil, nil, 0, MessageMeta{})
+	if err != nil {
+		t.Fatalf("write while a reader is open: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("write waited %v behind an open reader", elapsed)
+	}
+}

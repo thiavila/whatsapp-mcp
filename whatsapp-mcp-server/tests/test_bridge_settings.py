@@ -143,5 +143,48 @@ class SendResultTests(unittest.TestCase):
         self.assertEqual(result, {"success": True, "message": "sent"})
 
 
+class BridgeTimeoutTests(unittest.TestCase):
+    """A hung bridge must fail the tool call instead of blocking its thread forever."""
+
+    @patch("whatsapp.requests.get")
+    @patch("whatsapp.requests.post")
+    def test_every_call_has_a_timeout(self, post, get):
+        post.return_value.status_code = 200
+        post.return_value.json.return_value = {"success": True, "message": "ok"}
+        get.return_value.status_code = 200
+        get.return_value.json.return_value = {"success": True, "groups": []}
+        whatsapp.mark_messages_read("120363000000000001@g.us", ["ID1"])
+        whatsapp.send_message("5500000000001", "oi", show_typing=False)
+        whatsapp.list_joined_groups()
+        for call in post.call_args_list + get.call_args_list:
+            self.assertEqual(call.kwargs["timeout"], whatsapp.BRIDGE_TIMEOUT)
+
+    @patch("whatsapp.requests.post")
+    def test_media_calls_get_the_longer_timeout(self, post):
+        post.return_value.status_code = 200
+        post.return_value.json.return_value = {"success": True, "message": "ok", "path": "/tmp/x"}
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as media:
+            whatsapp.send_file("5500000000001", media.name)
+        whatsapp.download_media("ID1", "120363000000000001@g.us")
+        self.assertEqual(post.call_count, 2)
+        for call in post.call_args_list:
+            self.assertEqual(call.kwargs["timeout"], whatsapp.BRIDGE_MEDIA_TIMEOUT)
+
+    @patch("whatsapp.requests.post")
+    def test_timeout_becomes_a_failed_result(self, post):
+        post.side_effect = whatsapp.requests.Timeout("bridge did not answer")
+        ok, message = whatsapp.send_message("5500000000001", "oi", show_typing=False)
+        self.assertFalse(ok)
+        self.assertIn("bridge did not answer", message)
+        self.assertIn("may still have been applied", message)
+
+    @patch("whatsapp.requests.post")
+    def test_other_request_errors_keep_the_plain_message(self, post):
+        post.side_effect = whatsapp.requests.ConnectionError("refused")
+        ok, message = whatsapp.edit_message("120363000000000001@g.us", "ID1", "novo")
+        self.assertFalse(ok)
+        self.assertEqual(message, "Request error: refused")
+
+
 if __name__ == "__main__":
     unittest.main()
