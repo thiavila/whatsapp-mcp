@@ -70,13 +70,23 @@ def bridge_headers() -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+# (connect, read) seconds for bridge calls. Without a timeout a hung bridge
+# keeps the tool's worker thread blocked forever, and enough of them exhaust the
+# pool. The bridge only answers once WhatsApp has, so the read timeout covers the
+# whole call; media uploads and downloads get a longer one.
+BRIDGE_TIMEOUT = (5, 60)
+BRIDGE_MEDIA_TIMEOUT = (5, 300)
+
+
 def _bridge_post(url: str, **kwargs):
     headers = {**bridge_headers(), **kwargs.pop("headers", {})}
+    kwargs.setdefault("timeout", BRIDGE_TIMEOUT)
     return requests.post(url, headers=headers, **kwargs)
 
 
 def _bridge_get(url: str, **kwargs):
     headers = {**bridge_headers(), **kwargs.pop("headers", {})}
+    kwargs.setdefault("timeout", BRIDGE_TIMEOUT)
     return requests.get(url, headers=headers, **kwargs)
 
 TYPING_CHARS_PER_SECOND = 12.0
@@ -961,7 +971,7 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
         
-        response = _bridge_post(url, json=payload)
+        response = _bridge_post(url, json=payload, timeout=BRIDGE_MEDIA_TIMEOUT)
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -1004,7 +1014,7 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
         
-        response = _bridge_post(url, json=payload)
+        response = _bridge_post(url, json=payload, timeout=BRIDGE_MEDIA_TIMEOUT)
         
         # Check if the request was successful
         if response.status_code == 200:
@@ -1040,7 +1050,7 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
             "chat_jid": chat_jid
         }
         
-        response = _bridge_post(url, json=payload)
+        response = _bridge_post(url, json=payload, timeout=BRIDGE_MEDIA_TIMEOUT)
         
         if response.status_code == 200:
             result = response.json()
