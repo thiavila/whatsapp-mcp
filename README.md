@@ -204,6 +204,30 @@ Point that number's MCP server at the same env file (`WHATSAPP_BRIDGE_PORT`,
 `WHATSAPP_STORE_DIR` and the token are shared). Check which instance owns a
 port with `curl -s http://127.0.0.1:8081/api/health`.
 
+### Log rotation (macOS launchd)
+
+Under systemd the bridge's output goes to the journal, which rotates on its own.
+Under launchd, `StandardOutPath` grows without limit (and holds the text of every
+received message). `scripts/rotate-logs.sh` copies and truncates a file once it
+passes `--max-mb` (default 20), keeping `--keep` gzipped copies (default 3); the
+bridge keeps running. Schedule it hourly with a second agent:
+
+```xml
+<!-- ~/Library/LaunchAgents/com.example.whatsapp-log-rotate.plist -->
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.example.whatsapp-log-rotate</string>
+  <key>ProgramArguments</key><array>
+    <string>/path/to/whatsapp-mcp/scripts/rotate-logs.sh</string>
+    <string>/Users/me/Library/Logs/whatsapp-bridge.out.log</string>
+    <string>/Users/me/Library/Logs/whatsapp-bridge.err.log</string>
+  </array>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>RunAtLoad</key><true/>
+</dict></plist>
+```
+
+Load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.whatsapp-log-rotate.plist`.
+
 ### 3. Add the MCP server to your client
 
 First obtain the absolute paths you will need:
@@ -292,6 +316,8 @@ If compilation reports that `go-sqlite3 requires cgo`, verify that the MSYS2 `uc
 - Message metadata remains local. Attachments are downloaded on demand by default, or saved on arrival when eager media caching is enabled. Requested messages, contact data, or media may then be included in the AI provider's context according to that client's configuration and privacy policy.
 
 Back up the store directory if local history matters to you. Deleting it removes the local session and message database and requires pairing again.
+
+Both databases run in SQLite's WAL mode, so the MCP server's reads never hold up the bridge's writes. Recent writes may live in the `-wal` file next to each database until the next checkpoint: copy the `.db`, `-wal` and `-shm` files together with the bridge stopped, or use SQLite's backup API (`sqlite3 messages.db ".backup copy.db"`) while it runs.
 
 ## Security warning
 
