@@ -40,24 +40,43 @@ done
 max_bytes=$((max_mb * 1024 * 1024))
 
 # One run at a time (a manual run may overlap the scheduled one). The script
-# re-runs itself under a kernel flock held by perl (present on macOS and most
-# Linux systems); the kernel drops the lock when the holder exits, so a crashed
-# run leaves nothing to clean up. The path is fixed, not under $TMPDIR, because
-# launchd and a login shell see different $TMPDIR values.
-if [ -z "${ROTATE_LOGS_LOCKED:-}" ]; then
-  ROTATE_LOGS_LOCKED=1 exec perl -MFcntl=:flock -e '
+# re-runs itself through perl (shipped with macOS), which takes a kernel flock
+# and hands the locked descriptor to the new bash process: the lock lives as
+# long as this script and the commands it runs, and the kernel drops it when
+# they exit, so a crashed run leaves nothing to clean up. The lock file sits in
+# a private directory under $HOME, the same for launchd and a login shell.
+lock_dir="${XDG_CACHE_HOME:-$HOME/.cache}/rotate-logs"
+# Already running under the lock: the inherited descriptor is the lock file.
+# (Compared by inode, since macOS reports another device for /dev/fd/N.)
+inode() { ls -diL "$1" 2>/dev/null | awk '{print $1}'; }
+holds_lock() {
+  [ -n "${ROTATE_LOGS_LOCK_FD:-}" ] && [ -e "/dev/fd/$ROTATE_LOGS_LOCK_FD" ] && [ -f "$lock_dir/lock" ] &&
+    [ "$(inode "/dev/fd/$ROTATE_LOGS_LOCK_FD")" = "$(inode "$lock_dir/lock")" ]
+}
+if ! holds_lock; then
+  mkdir -p "$lock_dir" && chmod 700 "$lock_dir"
+  exec perl -e '
+    use Fcntl qw(:DEFAULT :flock F_GETFD F_SETFD FD_CLOEXEC);
     my $lock = shift;
-    open(my $fh, ">>", $lock) or die "cannot open $lock: $!\n";
-    flock($fh, LOCK_EX | LOCK_NB) or do { print STDERR "skipping: another rotation is running\n"; exit 0 };
-    system(@ARGV);
-    exit($? == -1 ? 127 : $? & 127 ? 128 + ($? & 127) : $? >> 8);
-  ' "${ROTATE_LOGS_LOCK:-/tmp/rotate-logs.$(id -u).lock}" "$BASH" "$0" --max-mb "$max_mb" --keep "$keep" -- "$@"
+    sysopen(my $fh, $lock, O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0600)
+      or die "cannot open lock $lock: $!\n";
+    -f $fh or die "lock $lock is not a regular file\n";
+    unless (flock($fh, LOCK_EX | LOCK_NB)) {
+      die "cannot lock $lock: $!\n" unless $!{EWOULDBLOCK} || $!{EAGAIN};
+      print STDERR "skipping: another rotation is running\n";
+      exit 0;
+    }
+    my $flags = fcntl($fh, F_GETFD, 0) or die "fcntl: $!\n";
+    fcntl($fh, F_SETFD, $flags & ~FD_CLOEXEC) or die "fcntl: $!\n";
+    $ENV{ROTATE_LOGS_LOCK_FD} = fileno($fh);
+    exec { $ARGV[0] } @ARGV or die "cannot run $ARGV[0]: $!\n";
+  ' "$lock_dir/lock" "$BASH" "$0" --max-mb "$max_mb" --keep "$keep" -- "$@"
 fi
 
 # Steps return on the first failure; set -e does not apply inside a function
 # called from an || list, so every step checks its own status.
 rotate_file() {
-  local file="$1" pending="$1.rotating" size i
+  local file="$1" pending="$1.rotating" size
   if [ ! -f "$pending" ]; then
     [ -f "$file" ] || return 0
     size=$(wc -c < "$file" | tr -d ' ') || return 1
@@ -68,13 +87,18 @@ rotate_file() {
     echo "rotated $file ($((size / 1024 / 1024)) MB)"
   fi
   gzip -c "$pending" > "$pending.gz" || { rm -f "$pending.gz"; return 1; }
-  rm -f "$file.$keep.gz"
-  i=$((keep - 1))
-  while [ "$i" -ge 1 ]; do
-    if [ -f "$file.$i.gz" ]; then mv "$file.$i.gz" "$file.$((i + 1)).gz" || return 1; fi
-    i=$((i - 1))
-  done
+  make_room "$file" 1 || return 1
   mv "$pending.gz" "$file.1.gz" && rm -f "$pending"
+}
+
+# Free slot FILE.<n>.gz by shifting the copies above it up one, dropping the one
+# in the last slot. It shifts only what is in the way, so after a run that
+# failed half-way the next run picks up where it stopped without losing a copy.
+make_room() {
+  local file="$1" n="$2"
+  [ -e "$file.$n.gz" ] || return 0
+  if [ "$n" -ge "$keep" ]; then rm -f "$file.$n.gz"; return; fi
+  make_room "$file" $((n + 1)) && mv "$file.$n.gz" "$file.$((n + 1)).gz"
 }
 
 status=0

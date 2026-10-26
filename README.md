@@ -210,7 +210,8 @@ Under systemd the bridge's output goes to the journal, which rotates on its own.
 Under launchd, `StandardOutPath` grows without limit (and holds the text of every
 received message). `scripts/rotate-logs.sh` copies and truncates a file once it
 passes `--max-mb` (default 20), keeping `--keep` gzipped copies (default 3); the
-bridge keeps running. It takes its lock through `perl`, which macOS ships.
+bridge keeps running. One run goes at a time, under a lock in
+`~/.cache/rotate-logs/` taken through `perl`, which macOS ships.
 Schedule it hourly with a second agent:
 
 ```xml
