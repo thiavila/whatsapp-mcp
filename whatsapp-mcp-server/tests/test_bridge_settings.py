@@ -176,6 +176,14 @@ class BridgeTimeoutTests(unittest.TestCase):
         ok, message = whatsapp.send_message("5500000000001", "oi", show_typing=False)
         self.assertFalse(ok)
         self.assertIn("bridge did not answer", message)
+        self.assertIn("may still have been applied", message)
+
+    @patch("whatsapp.requests.post")
+    def test_other_request_errors_keep_the_plain_message(self, post):
+        post.side_effect = whatsapp.requests.ConnectionError("refused")
+        ok, message = whatsapp.edit_message("120363000000000001@g.us", "ID1", "novo")
+        self.assertFalse(ok)
+        self.assertEqual(message, "Request error: refused")
 
 
 if __name__ == "__main__":

@@ -866,6 +866,13 @@ func TestMessageStoreUsesWALAndBusyTimeout(t *testing.T) {
 	if timeout < 5000 {
 		t.Fatalf("busy_timeout = %d, want at least 5000", timeout)
 	}
+	var synchronous int
+	if err := store.db.QueryRow("PRAGMA synchronous").Scan(&synchronous); err != nil {
+		t.Fatal(err)
+	}
+	if synchronous != 2 {
+		t.Fatalf("synchronous = %d, want 2 (FULL)", synchronous)
+	}
 }
 
 func TestOpenReadTransactionDoesNotBlockBridgeWrites(t *testing.T) {

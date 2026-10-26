@@ -89,13 +89,16 @@ type Chat struct {
 // (a locked database waits instead of failing at once). Transactions take the
 // write lock up front (_txlock=immediate) so a read-then-write transaction is
 // never refused mid-way with SQLITE_BUSY, which the busy timeout cannot retry.
+// go-sqlite3 defaults to synchronous=NORMAL, which in WAL mode skips the sync
+// on commit; FULL keeps every committed Signal session update across a power
+// loss or OS crash.
 func sqliteDSN(dir, name string) string {
 	path := filepath.Join(dir, name)
 	if abs, err := filepath.Abs(path); err == nil {
 		path = abs
 	}
 	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
-	return u.String() + "?_foreign_keys=on&_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL&_txlock=immediate"
+	return u.String() + "?_foreign_keys=on&_busy_timeout=10000&_journal_mode=WAL&_synchronous=FULL&_txlock=immediate"
 }
 
 // Initialize message store in dir (the historical default is "store").
