@@ -44,14 +44,17 @@ max_bytes=$((max_mb * 1024 * 1024))
 # and hands the locked descriptor to the new bash process: the lock lives as
 # long as this script and the commands it runs, and the kernel drops it when
 # they exit, so a crashed run leaves nothing to clean up. The lock file sits in
-# a private directory under $HOME, the same for launchd and a login shell.
-lock_dir="${XDG_CACHE_HOME:-$HOME/.cache}/rotate-logs"
+# a private directory under $HOME, the same for launchd and a login shell
+# (not $XDG_CACHE_HOME or $TMPDIR, which a login shell may set and launchd not).
+lock_dir="$HOME/.cache/rotate-logs"
 # Already running under the lock: the inherited descriptor is the lock file.
 # (Compared by inode, since macOS reports another device for /dev/fd/N.)
 inode() { ls -diL "$1" 2>/dev/null | awk '{print $1}'; }
 holds_lock() {
-  [ -n "${ROTATE_LOGS_LOCK_FD:-}" ] && [ -e "/dev/fd/$ROTATE_LOGS_LOCK_FD" ] && [ -f "$lock_dir/lock" ] &&
-    [ "$(inode "/dev/fd/$ROTATE_LOGS_LOCK_FD")" = "$(inode "$lock_dir/lock")" ]
+  local held lock
+  [ -n "${ROTATE_LOGS_LOCK_FD:-}" ] && [ -e "/dev/fd/$ROTATE_LOGS_LOCK_FD" ] && [ -f "$lock_dir/lock" ] || return 1
+  held=$(inode "/dev/fd/$ROTATE_LOGS_LOCK_FD") && lock=$(inode "$lock_dir/lock") || return 1
+  is_count "${held:0:6}" && [ "$held" = "$lock" ]
 }
 if ! holds_lock; then
   mkdir -p "$lock_dir" && chmod 700 "$lock_dir"
@@ -77,7 +80,9 @@ fi
 # called from an || list, so every step checks its own status.
 rotate_file() {
   local file="$1" pending="$1.rotating" size
-  if [ ! -f "$pending" ]; then
+  # Work left by a run that stopped: FILE.rotating (copied, not yet compressed)
+  # or FILE.rotating.gz (compressed, not yet published). Finish it first.
+  if [ ! -f "$pending" ] && [ ! -f "$pending.gz" ]; then
     [ -f "$file" ] || return 0
     size=$(wc -c < "$file" | tr -d ' ') || return 1
     case "$size" in '' | *[!0-9]*) return 1 ;; esac
@@ -86,9 +91,13 @@ rotate_file() {
     : > "$file" || return 1
     echo "rotated $file ($((size / 1024 / 1024)) MB)"
   fi
-  gzip -c "$pending" > "$pending.gz" || { rm -f "$pending.gz"; return 1; }
+  if [ -f "$pending" ]; then
+    gzip -c "$pending" > "$pending.gz" || { rm -f "$pending.gz"; return 1; }
+    rm -f "$pending" || return 1
+  fi
+  # Publishing is the single rename below, so a copy is never shifted twice.
   make_room "$file" 1 || return 1
-  mv "$pending.gz" "$file.1.gz" && rm -f "$pending"
+  mv "$pending.gz" "$file.1.gz"
 }
 
 # Free slot FILE.<n>.gz by shifting the copies above it up one, dropping the one
