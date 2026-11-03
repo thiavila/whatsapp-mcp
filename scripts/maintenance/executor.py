@@ -62,6 +62,9 @@ def atomic(path, data):
 def ctl(action, unit):
     if unit not in CONSUMERS + [b[0] for b in BRIDGES]:
         raise ValueError('unknown unit')
+    if action=='stop' and unit=='hermes-gateway.service':
+        # Native refusal protects turns/delegations that start after the idle probe.
+        return run([LAUNCHER,'gateway','stop'],timeout=240)
     return run(['systemctl', '--user', action, unit], timeout=240)
 
 

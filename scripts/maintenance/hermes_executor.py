@@ -36,6 +36,8 @@ def command(args,root=None,timeout=120,log=None):
 
 def ctl(action,unit):
     if unit not in CONSUMERS:raise ValueError('Hermes unit outside scope')
+    if action=='stop' and unit=='hermes-gateway.service':
+        return command([str(SHIM),'gateway','stop'],timeout=240)
     return command(['systemctl','--user',action,unit],timeout=240)
 
 
