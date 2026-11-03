@@ -87,8 +87,8 @@ type SetGroupBoolRequest struct {
 }
 
 type GroupRequestsResponse struct {
-	Success  bool                       `json:"success"`
-	Message  string                     `json:"message,omitempty"`
+	Success  bool                         `json:"success"`
+	Message  string                       `json:"message,omitempty"`
 	Requests []GroupParticipantRequestDTO `json:"requests"`
 }
 
@@ -119,19 +119,19 @@ type GroupInfoResponse struct {
 // expose the raw whatsmeow type because it carries proto/internal fields that
 // don't marshal cleanly.
 type GroupInfoDTO struct {
-	JID                    string                  `json:"jid"`
-	Name                   string                  `json:"name"`
-	Topic                  string                  `json:"topic,omitempty"`
-	OwnerJID               string                  `json:"owner_jid,omitempty"`
-	GroupCreated           string                  `json:"group_created,omitempty"`
-	ParticipantCount       int                     `json:"participant_count"`
-	IsAnnounce             bool                    `json:"is_announce"`
-	IsLocked               bool                    `json:"is_locked"`
-	IsEphemeral            bool                    `json:"is_ephemeral"`
-	IsJoinApprovalRequired bool                    `json:"is_join_approval_required"`
-	IsParent               bool                    `json:"is_parent"`
-	LinkedParentJID        string                  `json:"linked_parent_jid,omitempty"`
-	Participants           []GroupParticipantDTO   `json:"participants"`
+	JID                    string                `json:"jid"`
+	Name                   string                `json:"name"`
+	Topic                  string                `json:"topic,omitempty"`
+	OwnerJID               string                `json:"owner_jid,omitempty"`
+	GroupCreated           string                `json:"group_created,omitempty"`
+	ParticipantCount       int                   `json:"participant_count"`
+	IsAnnounce             bool                  `json:"is_announce"`
+	IsLocked               bool                  `json:"is_locked"`
+	IsEphemeral            bool                  `json:"is_ephemeral"`
+	IsJoinApprovalRequired bool                  `json:"is_join_approval_required"`
+	IsParent               bool                  `json:"is_parent"`
+	LinkedParentJID        string                `json:"linked_parent_jid,omitempty"`
+	Participants           []GroupParticipantDTO `json:"participants"`
 }
 
 type GroupParticipantDTO struct {

@@ -1,0 +1,57 @@
+name: MCP VM release
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'whatsapp-bridge/**'
+      - 'whatsapp-mcp-server/**'
+      - 'scripts/maintenance/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+  checks: read
+  pull-requests: read
+concurrency:
+  group: mcp-production-release
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Require merged PR and official code CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: python3 scripts/maintenance/release_ci.py "$SHA"
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version-file: whatsapp-bridge/go.mod
+          cache-dependency-path: whatsapp-bridge/go.sum
+      - name: Build only for an actual deployment
+        env:
+          GOMAXPROCS: '2'
+          GOFLAGS: '-p=2 -mod=readonly'
+          CGO_ENABLED: '1'
+          SHA: ${{ github.sha }}
+        run: |
+          mkdir -p /tmp/mcp-release
+          (cd whatsapp-bridge && go build -trimpath -o /tmp/mcp-release/whatsapp-bridge .)
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib
+          p=pathlib.Path('/tmp/mcp-release')
+          binary=p/'whatsapp-bridge'
+          (p/'manifest.json').write_text(json.dumps({'schema':1,'repository':'thiavila/whatsapp-mcp','sha':os.environ['SHA'],'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest()}))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mcp-vm-release
+          path: /tmp/mcp-release/*
+          retention-days: 14
+          if-no-files-found: error

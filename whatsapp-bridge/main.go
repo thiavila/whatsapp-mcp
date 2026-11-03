@@ -1619,6 +1619,15 @@ func main() {
 		os.Exit(2)
 	}
 
+	if cfg.CheckStore {
+		if err := checkStoreCopy(cfg.StoreDir); err != nil {
+			fmt.Fprintln(os.Stderr, "store canary failed:", err)
+			os.Exit(1)
+		}
+		fmt.Println("STORE_CANARY_OK")
+		return
+	}
+
 	// Set up logger
 	logger := waLog.Stdout("Client", "INFO", true)
 	logger.Infof("Starting WhatsApp client (instance %s, store %s, port %d, auth %s)...",

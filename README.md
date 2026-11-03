@@ -466,3 +466,34 @@ Notable changes in this fork include a current WhatsMeow dependency, loopback-on
 ## License
 
 [MIT](./LICENSE). WhatsMeow is a separate dependency distributed under its own [MPL-2.0 license](https://github.com/tulir/whatsmeow/blob/main/LICENSE).
+
+## CI leve e manutenção na VM
+
+`make ci` executa apenas código: `gofmt`, testes Go (com compilação/vet), sintaxe
+Python e testes unitários sintéticos. Sem Docker, WhatsApp real, navegador ou LLM.
+Concorrência Go limitada, caches persistentes e timeouts curtos. A CI oficial
+roda no PR pronto; um atestado válido do commit/base atuais evita repetição.
+`bash scripts/ci/local-ci.sh` testa um archive limpo, grava `local-ci` e publica
+um único push. `--dry-run` não publica nem grava status. A VM usa a conta bot
+`thiavila-hermes`; o Mac não participa da execução agendada.
+
+O workflow `MCP VM release` compila **somente para uma implantação efetiva**,
+depois de um PR mergeado com CI oficial verde. Um timer independente do gateway
+consulta o recibo e artefato do GitHub. Não há chave SSH pessoal no Actions.
+Instalação inicial da infraestrutura pelo administrador: no checkout main limpo
+da VM, `python3 scripts/maintenance/install_executor.py`.
+
+Antes de promover, o executor espera o Hermes ficar livre, verifica a origem e
+o digest do artefato, testa migrações em cópias privadas dos bancos sem rede e
+bloqueia mudanças de esquema/versão de migração. Faz backups consistentes,
+promove uma bridge por vez e confere conexão/autenticação. Recuperação de queda
+ou falha reverte código/binário, preservando os bancos e sessões **atuais**.
+Nunca restaura tokens/bancos antigos sobre trabalho novo; deriva de esquema
+impede rollback automático e exige intervenção. Recibos e backups ficam em
+`~/hermes-maintenance/mcp-deploy`, privados. Avisos chegam na DM do Thiago.
+
+O modo `whatsapp-bridge -check-store -store-dir COPIA` só aceita uma cópia com
+marcador `.maintenance-canary`, aplica os mesmos inicializadores e termina sem
+criar cliente WhatsApp, QR, listener ou evento. Não use em dados de produção.
+A revisão de outra família está dispensada temporariamente por Thiago para
+esta rotina (03/11/2026); testes e pipeline oficial continuam obrigatórios.

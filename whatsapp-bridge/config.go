@@ -66,6 +66,9 @@ type BridgeConfig struct {
 	// session and exits, so the next start shows a fresh QR (a new pairing also
 	// brings a new history sync).
 	Logout bool
+
+	// CheckStore runs migrations only on a marked disposable copy, without networking.
+	CheckStore bool
 }
 
 // loadBridgeConfig resolves the configuration with precedence
@@ -86,6 +89,7 @@ func loadBridgeConfig(args []string, getenv func(string) string) (BridgeConfig, 
 	storeFlag := fs.String("store-dir", "", "directory for messages.db, whatsapp.db and the media cache (env WHATSAPP_STORE_DIR, default ./store)")
 	instanceFlag := fs.String("instance", "", "instance name used in logs and /api/health (env WHATSAPP_BRIDGE_INSTANCE)")
 	requireTokenFlag := fs.Bool("require-token", false, "refuse to start without a REST token (env WHATSAPP_BRIDGE_REQUIRE_TOKEN)")
+	checkStoreFlag := fs.Bool("check-store", false, "validate a marked disposable database copy without connecting to WhatsApp")
 	logoutFlag := fs.Bool("logout", false, "unlink this device from the phone, delete the local session and exit")
 	fullHistoryFlag := fs.Uint("full-history-days", 0, "on a new pairing, request a full history sync of up to N days (env WHATSAPP_FULL_HISTORY_DAYS, default 0 = WhatsApp default)")
 	if err := fs.Parse(args); err != nil {
@@ -131,6 +135,7 @@ func loadBridgeConfig(args []string, getenv func(string) string) (BridgeConfig, 
 	}
 
 	cfg.Logout = *logoutFlag
+	cfg.CheckStore = *checkStoreFlag
 
 	// Validate in 64 bits before narrowing, so an oversized value cannot wrap.
 	var fullHistoryDays uint64
