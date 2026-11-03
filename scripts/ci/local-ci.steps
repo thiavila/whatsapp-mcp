@@ -1,0 +1,2 @@
+# One canonical code-only entrypoint, shared by GitHub and the VM.
+python3 scripts/ci/check.py

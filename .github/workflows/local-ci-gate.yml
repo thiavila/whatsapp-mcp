@@ -1,0 +1,80 @@
+name: MCP code CI
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+permissions:
+  contents: read
+  statuses: read
+concurrency:
+  group: mcp-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      attested: ${{ steps.check.outputs.attested }}
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BASE: ${{ github.event.pull_request.base.sha || github.sha }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          attested=false
+          run=true
+          if [ "$DRAFT" = true ]; then run=false; fi
+          if [ "$EVENT" = pull_request ]; then
+            if behind=$(gh api "repos/$REPO/compare/$BASE...$SHA" --jq .behind_by) && [ "$behind" = 0 ]; then
+              latest=$(gh api "repos/$REPO/commits/$SHA/statuses?per_page=100" --jq '[.[] | select(.context=="local-ci" and (.creator.login=="thiavila" or .creator.login=="thiavila-hermes"))][0]') || latest='{}'
+              if echo "$latest" | jq -e --arg sha "$SHA" '.state=="success" and .description==("code-only-v1 "+$sha)' >/dev/null; then attested=true; fi
+            fi
+          fi
+          echo "attested=$attested" >> "$GITHUB_OUTPUT"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+  checks:
+    needs: gate
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.attested != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5
+        with:
+          go-version-file: whatsapp-bridge/go.mod
+          cache: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@b75a909f75acd358c2196fb9a5f1299a9a8868a6b # v6
+        with:
+          version: '0.13.5'
+          enable-cache: false
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ~/.cache/whatsapp-mcp-ci
+          key: code-ci-${{ runner.os }}-${{ hashFiles('whatsapp-bridge/go.sum', 'whatsapp-mcp-server/uv.lock') }}
+      - run: python3 scripts/ci/check.py
+  result:
+    name: MCP CI result
+    needs: [gate, checks]
+    if: always() && needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - env:
+          GATE: ${{ needs.gate.result }}
+          RUN: ${{ needs.gate.outputs.run }}
+          ATTESTED: ${{ needs.gate.outputs.attested }}
+          CHECKS: ${{ needs.checks.result }}
+        run: |
+          test "$GATE" = success
+          test "$RUN" = true
+          test "$ATTESTED" = true || test "$CHECKS" = success
