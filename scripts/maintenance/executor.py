@@ -278,6 +278,8 @@ def poll():
     with (BASE/'executor.lock').open('w') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         recover()
+        import hermes_executor
+        hermes_executor.poll()
         workflow=api(f'repos/{REPOSITORY}/actions/workflows/release.yml')
         if workflow['path']!=WORKFLOW: raise ValueError('workflow identity mismatch')
         runs=api(f'repos/{REPOSITORY}/actions/workflows/{workflow["id"]}/runs?branch=main&per_page=1')['workflow_runs']

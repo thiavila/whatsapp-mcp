@@ -65,7 +65,7 @@ jobs:
   result:
     name: MCP CI result
     needs: [gate, checks]
-    if: always()
+    if: always() && needs.gate.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     steps:

@@ -497,3 +497,25 @@ marcador `.maintenance-canary`, aplica os mesmos inicializadores e termina sem
 criar cliente WhatsApp, QR, listener ou evento. Não use em dados de produção.
 A revisão de outra família está dispensada temporariamente por Thiago para
 esta rotina (03/11/2026); testes e pipeline oficial continuam obrigatórios.
+
+O executor também atende pedidos `Hermes official installer request` para o
+runtime Hermes. A rotina principal prepara uma worktree com a nova release
+oficial e adapta os patches. Faz staging de dependências pelo instalador
+upstream e chama o gerador de recibos instalado na VM:
+
+```sh
+python3 ~/hermes-maintenance/mcp-deploy/control/prepare_hermes.py \
+  --root /home/thiago/worktrees/hermes-CANDIDATO \
+  --tag vX.Y.Z --upstream-sha SHA_OFICIAL
+```
+
+O gerador executa os oito arquivos de regressão pelo runner oficial em HOME
+privado, sem copiar autenticação. Só cria recibo após exit zero. A rotina
+aciona `hermes-maintenance.yml` em main com SHA do candidato, upstream, tag,
+hash do recibo e `action=check` ou `promote`. O executor valida release >=72h,
+commit oficial, recibo/log/instalador e worktree limpa. Faz canário dos bancos
+copiados, backup privado e usa o instalador oficial; o processo fica fora do
+cgroup do gateway e aguarda ociosidade. Preserva topologia, perfis e config.
+Mudanças de esquema/configuração, downgrade ou patch da mesma versão bloqueiam
+autopromoção. O pipeline de hardening de segurança continua separado. Nenhum
+revisor/Claude/API/fallback é configurado por estes scripts.

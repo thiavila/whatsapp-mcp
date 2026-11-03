@@ -23,7 +23,7 @@ def main():
         raise SystemExit('clean committed source required')
     os.umask(0o077)
     code=BASE/'control';code.mkdir(mode=0o700,parents=True,exist_ok=True)
-    for name in ['executor.py','control.py','release_ci.py']:
+    for name in ['executor.py','control.py','release_ci.py','hermes_control.py','hermes_executor.py','prepare_hermes.py']:
         shutil.copyfile(ROOT/'scripts/maintenance'/name,code/name)
         (code/name).chmod(0o600)
     units=Path.home()/'.config/systemd/user';units.mkdir(parents=True,exist_ok=True)
@@ -38,8 +38,8 @@ Environment=HOME=/home/thiago
 UMask=0077
 Nice=10
 CPUQuota=50%
-MemoryMax=384M
-TimeoutStartSec=15min
+MemoryMax=1536M
+TimeoutStartSec=30min
 NoNewPrivileges=true
 '''
     (units/'mcp-maintenance-deploy.service').write_text(service)

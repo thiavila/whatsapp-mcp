@@ -1,0 +1,60 @@
+name: Hermes official installer request
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        required: true
+        type: string
+      upstream_sha:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+      receipt_sha256:
+        required: true
+        type: string
+      action:
+        required: true
+        type: choice
+        options: [check, promote]
+        default: check
+permissions:
+  contents: read
+concurrency:
+  group: hermes-maintenance-request
+  cancel-in-progress: false
+jobs:
+  request:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Validate receipt reference and official stable release
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          UPSTREAM_SHA: ${{ inputs.upstream_sha }}
+          TAG: ${{ inputs.tag }}
+          RECEIPT_SHA: ${{ inputs.receipt_sha256 }}
+          ACTION: ${{ inputs.action }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PYTHONPATH=scripts/maintenance python3 - <<'PY'
+          import datetime,json,os,pathlib,subprocess
+          from hermes_control import validate_request,stable_release
+          request={'schema':1,'component':'hermes','candidate_sha':os.environ['CANDIDATE_SHA'],'upstream_sha':os.environ['UPSTREAM_SHA'],'tag':os.environ['TAG'],'receipt_sha256':os.environ['RECEIPT_SHA'],'action':os.environ['ACTION']}
+          validate_request(request)
+          release=json.loads(subprocess.check_output(['gh','api','repos/NousResearch/hermes-agent/releases/tags/'+request['tag']]))
+          stable_release(release,request['tag'],request['upstream_sha'],datetime.datetime.now(datetime.timezone.utc))
+          p=pathlib.Path('/tmp/hermes-request');p.mkdir()
+          (p/'request.json').write_text(json.dumps(request,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hermes-installer-request
+          path: /tmp/hermes-request/request.json
+          retention-days: 14
+          if-no-files-found: error
