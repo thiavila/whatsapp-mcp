@@ -20,9 +20,7 @@ from hermes_control import candidate_root, stable_release, validate_request
 BASE=Path('/home/thiago/hermes-maintenance/hermes-deploy')
 HOME=Path('/home/thiago/.hermes')
 WORKFLOW='.github/workflows/hermes-maintenance.yml'
-CONSUMERS=['wa-indexa-watch.timer','melancia-roberto-watch.timer',
-           'wa-indexa-watch.service','melancia-roberto-watch.service',
-           'hermes-dashboard.service','hermes-gateway.service']
+CONSUMERS=[*common.WATCH_TIMERS,*common.WATCH_SERVICES,'hermes-dashboard.service','hermes-gateway.service']
 UNITS=Path('/home/thiago/.config/systemd/user')
 SHIM=Path('/home/thiago/.local/bin/hermes')
 
@@ -155,7 +153,7 @@ def canary(root,copies,schemas,log):
 
 
 def resume(states):
-    for unit in ['hermes-gateway.service','hermes-dashboard.service','wa-indexa-watch.timer','melancia-roberto-watch.timer']:
+    for unit in ['hermes-gateway.service','hermes-dashboard.service',*common.WATCH_TIMERS]:
         if states.get(unit):ctl('start',unit)
 
 
@@ -200,7 +198,7 @@ def apply(request,run_id):
         current=tuple(int(n) for n in state.get('code_version','0.0.0').lstrip('v').split('+')[0].split('.')[:3])
         target=tuple(int(n) for n in request['tag'].lstrip('v').split('.'))
         if target<=current:raise ValueError('Hermes automatic downgrade or same-version patch requires explicit deployment')
-    if any(active(u) for u in ['wa-indexa-watch.service','melancia-roberto-watch.service']):return False
+    if any(common.busy_service(u) for u in common.WATCH_SERVICES):return False
     # Preserve live config/auth. Official config migration is not in this automation.
     config_hashes={str(p):common.digest(p) for p in state_files() if p.name!='auth.json'}
     required=sum(p.stat().st_size for p in databases())
@@ -226,7 +224,15 @@ def apply(request,run_id):
         'backup':str(backup),'units':units,'schemas':schemas,'run_id':run_id}
     common.atomic(BASE/'pending.json',tx)
     try:
-        for unit in CONSUMERS:ctl('stop',unit)
+        for unit in common.WATCH_TIMERS:ctl('stop',unit)
+        if any(common.busy_service(u) for u in common.WATCH_SERVICES):
+            resume(units);(BASE/'pending.json').unlink();return False
+        try:ctl('stop','hermes-gateway.service')
+        except subprocess.CalledProcessError:
+            if active('hermes-gateway.service'):
+                resume(units);(BASE/'pending.json').unlink();return False
+            raise
+        ctl('stop','hermes-dashboard.service')
         tx['schemas']=snapshot_archive(backup/'sqlite-backup.zip')
         tx['sqlite_archive_sha256']=common.digest(backup/'sqlite-backup.zip')
         common.atomic(BASE/'pending.json',tx)

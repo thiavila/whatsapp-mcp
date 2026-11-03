@@ -94,5 +94,15 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(args,[e.LAUNCHER,'gateway','stop'])
             self.assertNotIn('--yes',args)
 
+    def test_oneshot_activating_is_busy_and_all_monitors_are_preserved(self):
+        with patch.object(e,'run',return_value='activating'):
+            self.assertTrue(e.busy_service('deploy-indexa-watch.service'))
+        with patch.object(e,'run',return_value='inactive'):
+            self.assertFalse(e.busy_service('deploy-indexa-watch.service'))
+        self.assertEqual(len(e.WATCH_TIMERS),4)
+        with patch.object(e,'ctl') as ctl:
+            e.resume_consumers({u:True for u in e.CONSUMERS})
+        self.assertEqual([call.args[1] for call in ctl.call_args_list],['hermes-gateway.service',*e.WATCH_TIMERS])
+
 
 if __name__=='__main__': unittest.main()
