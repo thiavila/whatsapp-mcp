@@ -60,5 +60,19 @@ class HermesControlTests(unittest.TestCase):
                 self.assertEqual(connection.execute('SELECT value FROM sessions').fetchone()[0],'synthetic')
             self.assertEqual(output.stat().st_mode&0o777,0o600)
 
+    def test_failed_canary_is_not_repeated_on_every_poll(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run=dict(id=1,status='completed',conclusion='success',path=hermes_executor.WORKFLOW,
+                     workflow_id=7,repository={'full_name':'thiavila/whatsapp-mcp'},
+                     head_repository={'full_name':'thiavila/whatsapp-mcp'},head_branch='main',event='workflow_dispatch')
+            def api(path):
+                if '/workflows/' in path and '/runs?' not in path:return {'id':7}
+                if '/runs?' in path:return {'workflow_runs':[run]}
+                return run
+            with patch.object(hermes_executor,'BASE',Path(temporary)),patch.object(hermes_executor,'recover'),patch.object(hermes_executor.common,'api',side_effect=api),patch.object(hermes_executor,'request_artifact',return_value={'candidate_sha':'a'*40}),patch.object(hermes_executor,'apply',side_effect=ValueError('schema changed')) as apply:
+                with self.assertRaises(ValueError):hermes_executor.poll()
+                hermes_executor.poll()
+                self.assertEqual(apply.call_count,1)
+
 
 if __name__=='__main__':unittest.main()

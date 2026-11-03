@@ -268,7 +268,19 @@ def poll():
         raise ValueError('Hermes request provenance')
     done=BASE/'last-run.json'
     if done.exists() and json_file(done).get('run_id')==run['id']:return
+    failed=BASE/'failed-run.json'
+    control_hash=common.digest(Path(__file__))
+    if failed.exists():
+        previous=json_file(failed)
+        if previous.get('run_id')==run['id'] and previous.get('control_sha256')==control_hash:return
     request=request_artifact(run)
     blocked=BASE/'blocked.json'
     if blocked.exists() and json_file(blocked).get('candidate_sha')==request['candidate_sha']:return
-    if apply(request,run['id']):common.atomic(done,{'run_id':run['id']})
+    try:
+        completed=apply(request,run['id'])
+    except Exception as error:
+        common.atomic(failed,{'run_id':run['id'],'control_sha256':control_hash,'error_type':type(error).__name__})
+        raise
+    if completed:
+        common.atomic(done,{'run_id':run['id']})
+        failed.unlink(missing_ok=True)
