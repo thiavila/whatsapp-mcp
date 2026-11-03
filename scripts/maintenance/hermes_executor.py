@@ -138,9 +138,18 @@ def state_files():
     return result
 
 
+
+def active_session_copies(copies,schemas):
+    # Historical snapshots and nested agent sandboxes are backups, not profiles
+    # served by this gateway. Never migrate them while testing an app update.
+    return [str(copies/Path(p).relative_to(HOME)) for p in schemas
+            if Path(p)==HOME/'state.db' or
+            (Path(p).name=='state.db' and Path(p).parent.parent==HOME/'profiles')]
+
+
 def canary(root,copies,schemas,log):
     # Initializers run only against copied state.db files with a private HOME.
-    paths=[str(copies/Path(p).relative_to(HOME)) for p in schemas if Path(p).name=='state.db']
+    paths=active_session_copies(copies,schemas)
     with tempfile.TemporaryDirectory(prefix='hermes-home-') as home:
         code='import json,sys; from pathlib import Path; from hermes_state import SessionDB; '+\
              '[SessionDB(Path(p)).close() for p in json.loads(sys.argv[1])]'
@@ -148,7 +157,7 @@ def canary(root,copies,schemas,log):
                  'python3','-c',code,json.dumps(paths)],root,timeout=180,log=log)
         for path in schemas:
             if common.db_schema(copies/Path(path).relative_to(HOME))!=schemas[path]:
-                raise ValueError('Hermes schema migration: automatic promotion blocked')
+                raise ValueError('Hermes schema migration: automatic promotion blocked for '+str(Path(path).relative_to(HOME)))
         command([str(root/'.hermes/bin/hermes'),'--help'],root,timeout=60,log=log)
 
 

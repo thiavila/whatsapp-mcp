@@ -74,5 +74,14 @@ class HermesControlTests(unittest.TestCase):
                 hermes_executor.poll()
                 self.assertEqual(apply.call_count,1)
 
+    def test_canary_never_migrates_archived_or_nested_session_backups(self):
+        home=hermes_executor.HOME
+        current=[home/'state.db',home/'profiles/memo-vic/state.db']
+        historical=[home/'profiles/memo-vic/state-snapshots/old/state.db',home/'profiles/memo-vic/home/.hermes/state.db']
+        schemas={str(p):'hash' for p in current+historical}
+        copies=Path('/private-copy')
+        result=hermes_executor.active_session_copies(copies,schemas)
+        self.assertEqual(result,[str(copies/p.relative_to(home)) for p in current])
+
 
 if __name__=='__main__':unittest.main()
