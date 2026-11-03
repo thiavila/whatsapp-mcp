@@ -68,6 +68,31 @@ def snapshot(destination):
     return schemas
 
 
+
+def snapshot_archive(destination):
+    # A canary copy is already gone before this phase. Keep one database at a
+    # time, then retain a verified compressed backup rather than a second full tree.
+    destination=Path(destination);schemas={}
+    temporary=destination.with_suffix('.tmp')
+    with tempfile.TemporaryDirectory(prefix='sqlite-copy-',dir=destination.parent) as folder:
+        with zipfile.ZipFile(temporary,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=1) as archive:
+            for path in sorted(databases(),key=lambda p:p.stat().st_size,reverse=True):
+                # Budget both a disposable database and its worst-case ZIP growth.
+                if shutil.disk_usage(destination.parent).free<1024**3+2*path.stat().st_size:
+                    raise ValueError('compressed backup disk reserve')
+                target=Path(folder)/'snapshot.db'
+                with closing(sqlite3.connect(f'file:{path}?mode=ro',uri=True)) as source:
+                    with closing(sqlite3.connect(target)) as copy:source.backup(copy)
+                schemas[str(path)]=common.db_schema(target)
+                archive.write(target,str(path.relative_to(HOME)))
+                target.unlink()
+    temporary.chmod(0o600)
+    with zipfile.ZipFile(temporary) as archive:
+        if archive.testzip() is not None:raise ValueError('compressed snapshot integrity')
+    temporary.replace(destination)
+    return schemas
+
+
 def validate_local(request):
     receipt_path=BASE/'receipts'/request['candidate_sha']/'receipt.json'
     raw=receipt_path.read_bytes()
@@ -179,7 +204,7 @@ def apply(request,run_id):
     # Preserve live config/auth. Official config migration is not in this automation.
     config_hashes={str(p):common.digest(p) for p in state_files() if p.name!='auth.json'}
     required=sum(p.stat().st_size for p in databases())
-    if shutil.disk_usage(BASE).free<1024**3+2*required:raise ValueError('Hermes snapshot disk gate')
+    if shutil.disk_usage(BASE).free<1024**3+required:raise ValueError('Hermes snapshot disk gate')
     destination=BASE/'runs'/str(run_id);destination.mkdir(mode=0o700,parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='hermes-canary-',dir=destination) as temporary:
         schemas=snapshot(Path(temporary));canary(root,Path(temporary),schemas,destination/'canary.log')
@@ -202,7 +227,9 @@ def apply(request,run_id):
     common.atomic(BASE/'pending.json',tx)
     try:
         for unit in CONSUMERS:ctl('stop',unit)
-        tx['schemas']=snapshot(backup/'databases');common.atomic(BASE/'pending.json',tx)
+        tx['schemas']=snapshot_archive(backup/'sqlite-backup.zip')
+        tx['sqlite_archive_sha256']=common.digest(backup/'sqlite-backup.zip')
+        common.atomic(BASE/'pending.json',tx)
         # Snapshot configs privately; never replay auth.json in recovery.
         for path in state_files():
             target=backup/'config'/path.relative_to(HOME);target.parent.mkdir(parents=True,exist_ok=True)

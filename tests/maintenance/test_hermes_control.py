@@ -1,4 +1,8 @@
+from contextlib import closing
 import datetime as dt
+import sqlite3
+import tempfile
+import zipfile
 from pathlib import Path
 import sys
 import unittest
@@ -36,6 +40,25 @@ class HermesControlTests(unittest.TestCase):
         self.assertEqual(env['XDG_RUNTIME_DIR'],'/run/user/1000')
         self.assertEqual(env['DBUS_SESSION_BUS_ADDRESS'],'unix:path=/run/user/1000/bus')
         self.assertNotIn('ANTHROPIC_API_KEY',env)
+
+    def test_compressed_backup_restores_consistent_data(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);home=root/'home';home.mkdir()
+            database=home/'state.db'
+            with closing(sqlite3.connect(database)) as connection,connection:
+                connection.execute('CREATE TABLE sessions(id INTEGER PRIMARY KEY,value TEXT)')
+                connection.execute("INSERT INTO sessions VALUES(1,'synthetic')")
+            output=root/'backup.zip'
+            with patch.object(hermes_executor,'HOME',home):
+                schemas=hermes_executor.snapshot_archive(output)
+            with zipfile.ZipFile(output) as archive:
+                self.assertEqual(archive.namelist(),['state.db'])
+                self.assertIsNone(archive.testzip())
+                restored=root/'restored.db';restored.write_bytes(archive.read('state.db'))
+            self.assertEqual(hermes_executor.common.db_schema(restored),schemas[str(database)])
+            with closing(sqlite3.connect(restored)) as connection:
+                self.assertEqual(connection.execute('SELECT value FROM sessions').fetchone()[0],'synthetic')
+            self.assertEqual(output.stat().st_mode&0o777,0o600)
 
 
 if __name__=='__main__':unittest.main()
