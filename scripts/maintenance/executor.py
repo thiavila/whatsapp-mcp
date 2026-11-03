@@ -33,8 +33,9 @@ BRIDGES = [
     ('whatsapp-bridge-melancia@melancia-roberto.service', 8083, Path('/home/thiago/.local/share/whatsapp-bridges/melancia-roberto/store')),
     ('whatsapp-bridge-melancia@melancia-lismeri.service', 8084, Path('/home/thiago/.local/share/whatsapp-bridges/melancia-lismeri/store')),
 ]
-CONSUMERS = ['wa-indexa-watch.timer', 'melancia-roberto-watch.timer',
-             'wa-indexa-watch.service', 'melancia-roberto-watch.service', 'hermes-gateway.service']
+WATCH_TIMERS=['wa-indexa-watch.timer','melancia-roberto-watch.timer','deploy-indexa-watch.timer','sentry-indexa-watch.timer']
+WATCH_SERVICES=[unit.replace('.timer','.service') for unit in WATCH_TIMERS]
+CONSUMERS=WATCH_TIMERS+WATCH_SERVICES+['hermes-gateway.service']
 BINARY = REPO / 'whatsapp-bridge/whatsapp-bridge'
 
 
@@ -66,6 +67,11 @@ def ctl(action, unit):
         # Native refusal protects turns/delegations that start after the idle probe.
         return run([LAUNCHER,'gateway','stop'],timeout=240)
     return run(['systemctl', '--user', action, unit], timeout=240)
+
+
+def busy_service(unit):
+    state=run(['systemctl','--user','show',unit,'-p','ActiveState','--value'])
+    return state not in ['inactive','failed']
 
 
 def active(unit):
@@ -183,7 +189,7 @@ def atomic_binary(source):
 
 
 def resume_consumers(states):
-    order = ['hermes-gateway.service', 'wa-indexa-watch.timer', 'melancia-roberto-watch.timer']
+    order = ['hermes-gateway.service',*WATCH_TIMERS]
     for unit in order:
         if states.get(unit): ctl('start', unit)
 
@@ -266,12 +272,21 @@ def deploy(run_id, sha):
     shutil.copyfile(BINARY,tx['old_binary']); Path(tx['old_binary']).chmod(0o700)
     if not gateway_quiet():
         print('deferred: work started during staging'); return
-    if any(active(u) for u in ['wa-indexa-watch.service', 'melancia-roberto-watch.service']):
+    if any(busy_service(u) for u in WATCH_SERVICES):
         print('deferred: watcher is processing work'); return
     # Persist before any service stops: crash recovery knows exactly what to resume.
     atomic(BASE/'pending.json',tx)
     try:
-        for unit in CONSUMERS: ctl('stop',unit)
+        for unit in WATCH_TIMERS:ctl('stop',unit)
+        if any(busy_service(u) for u in WATCH_SERVICES):
+            resume_consumers(tx['consumers']);(BASE/'pending.json').unlink()
+            print('deferred: watcher started while staging');return
+        try:ctl('stop','hermes-gateway.service')
+        except subprocess.CalledProcessError:
+            if active('hermes-gateway.service'):
+                resume_consumers(tx['consumers']);(BASE/'pending.json').unlink()
+                print('deferred by native gateway stop guard');return
+            raise
         ensure_clean()
         run(['git','-c','core.hooksPath=/dev/null','-C',str(REPO),'merge','--ff-only',sha])
         # Old instances continue using their old mapped executable; each is promoted separately.

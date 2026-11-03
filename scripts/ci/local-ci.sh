@@ -27,5 +27,5 @@ ref="refs/local-ci/$sha"
 git push --quiet origin "$sha:$ref"
 gh api -X POST "repos/thiavila/whatsapp-mcp/statuses/$sha" -f state=success -f context=local-ci \
   -f description="code-only-v1 $sha" --silent
-if [[ "$mode" != --no-push ]]; then git push origin "HEAD:refs/heads/$branch"; fi
+if [[ "$mode" != --no-push ]]; then git push origin "$sha:refs/heads/$branch"; fi
 git push --quiet origin ":$ref"

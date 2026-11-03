@@ -35,6 +35,8 @@ Type=oneshot
 ExecStart={PYTHON} -I -c "import sys,runpy; sys.path.insert(0, '{code}'); runpy.run_path('{code}/executor.py', run_name='__main__')" --poll
 Environment=PATH=/home/thiago/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/thiago
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 UMask=0077
 Nice=10
 CPUQuota=50%

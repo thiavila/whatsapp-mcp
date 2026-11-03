@@ -20,15 +20,14 @@ from hermes_control import candidate_root, stable_release, validate_request
 BASE=Path('/home/thiago/hermes-maintenance/hermes-deploy')
 HOME=Path('/home/thiago/.hermes')
 WORKFLOW='.github/workflows/hermes-maintenance.yml'
-CONSUMERS=['wa-indexa-watch.timer','melancia-roberto-watch.timer',
-           'wa-indexa-watch.service','melancia-roberto-watch.service',
-           'hermes-dashboard.service','hermes-gateway.service']
+CONSUMERS=[*common.WATCH_TIMERS,*common.WATCH_SERVICES,'hermes-dashboard.service','hermes-gateway.service']
 UNITS=Path('/home/thiago/.config/systemd/user')
 SHIM=Path('/home/thiago/.local/bin/hermes')
 
 
 def command(args,root=None,timeout=120,log=None):
-    env={'HOME':'/home/thiago','HERMES_HOME':str(HOME),'PATH':'/home/thiago/.local/bin:/usr/local/bin:/usr/bin:/bin','LANG':'C.UTF-8'}
+    env={'HOME':'/home/thiago','HERMES_HOME':str(HOME),'PATH':'/home/thiago/.local/bin:/usr/local/bin:/usr/bin:/bin','LANG':'C.UTF-8',
+         'XDG_RUNTIME_DIR':'/run/user/1000','DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/1000/bus'}
     if log is None:return subprocess.check_output(args,cwd=root,env=env,stdin=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=timeout).decode().strip()
     with Path(log).open('ab') as stream:
         subprocess.run(args,cwd=root,env=env,stdin=subprocess.DEVNULL,stdout=stream,stderr=subprocess.STDOUT,timeout=timeout,check=True)
@@ -64,6 +63,31 @@ def snapshot(destination):
         with closing(sqlite3.connect(f'file:{path}?mode=ro',uri=True)) as source:
             with closing(sqlite3.connect(target)) as copy:source.backup(copy)
         target.chmod(0o600);schemas[str(path)]=common.db_schema(target)
+    return schemas
+
+
+
+def snapshot_archive(destination):
+    # A canary copy is already gone before this phase. Keep one database at a
+    # time, then retain a verified compressed backup rather than a second full tree.
+    destination=Path(destination);schemas={}
+    temporary=destination.with_suffix('.tmp')
+    with tempfile.TemporaryDirectory(prefix='sqlite-copy-',dir=destination.parent) as folder:
+        with zipfile.ZipFile(temporary,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=1) as archive:
+            for path in sorted(databases(),key=lambda p:p.stat().st_size,reverse=True):
+                # Budget both a disposable database and its worst-case ZIP growth.
+                if shutil.disk_usage(destination.parent).free<1024**3+2*path.stat().st_size:
+                    raise ValueError('compressed backup disk reserve')
+                target=Path(folder)/'snapshot.db'
+                with closing(sqlite3.connect(f'file:{path}?mode=ro',uri=True)) as source:
+                    with closing(sqlite3.connect(target)) as copy:source.backup(copy)
+                schemas[str(path)]=common.db_schema(target)
+                archive.write(target,str(path.relative_to(HOME)))
+                target.unlink()
+    temporary.chmod(0o600)
+    with zipfile.ZipFile(temporary) as archive:
+        if archive.testzip() is not None:raise ValueError('compressed snapshot integrity')
+    temporary.replace(destination)
     return schemas
 
 
@@ -114,9 +138,18 @@ def state_files():
     return result
 
 
+
+def active_session_copies(copies,schemas):
+    # Historical snapshots and nested agent sandboxes are backups, not profiles
+    # served by this gateway. Never migrate them while testing an app update.
+    return [str(copies/Path(p).relative_to(HOME)) for p in schemas
+            if Path(p)==HOME/'state.db' or
+            (Path(p).name=='state.db' and Path(p).parent.parent==HOME/'profiles')]
+
+
 def canary(root,copies,schemas,log):
     # Initializers run only against copied state.db files with a private HOME.
-    paths=[str(copies/Path(p).relative_to(HOME)) for p in schemas if Path(p).name=='state.db']
+    paths=active_session_copies(copies,schemas)
     with tempfile.TemporaryDirectory(prefix='hermes-home-') as home:
         code='import json,sys; from pathlib import Path; from hermes_state import SessionDB; '+\
              '[SessionDB(Path(p)).close() for p in json.loads(sys.argv[1])]'
@@ -124,12 +157,12 @@ def canary(root,copies,schemas,log):
                  'python3','-c',code,json.dumps(paths)],root,timeout=180,log=log)
         for path in schemas:
             if common.db_schema(copies/Path(path).relative_to(HOME))!=schemas[path]:
-                raise ValueError('Hermes schema migration: automatic promotion blocked')
+                raise ValueError('Hermes schema migration: automatic promotion blocked for '+str(Path(path).relative_to(HOME)))
         command([str(root/'.hermes/bin/hermes'),'--help'],root,timeout=60,log=log)
 
 
 def resume(states):
-    for unit in ['hermes-gateway.service','hermes-dashboard.service','wa-indexa-watch.timer','melancia-roberto-watch.timer']:
+    for unit in ['hermes-gateway.service','hermes-dashboard.service',*common.WATCH_TIMERS]:
         if states.get(unit):ctl('start',unit)
 
 
@@ -174,11 +207,11 @@ def apply(request,run_id):
         current=tuple(int(n) for n in state.get('code_version','0.0.0').lstrip('v').split('+')[0].split('.')[:3])
         target=tuple(int(n) for n in request['tag'].lstrip('v').split('.'))
         if target<=current:raise ValueError('Hermes automatic downgrade or same-version patch requires explicit deployment')
-    if any(active(u) for u in ['wa-indexa-watch.service','melancia-roberto-watch.service']):return False
+    if any(common.busy_service(u) for u in common.WATCH_SERVICES):return False
     # Preserve live config/auth. Official config migration is not in this automation.
     config_hashes={str(p):common.digest(p) for p in state_files() if p.name!='auth.json'}
     required=sum(p.stat().st_size for p in databases())
-    if shutil.disk_usage(BASE).free<1024**3+2*required:raise ValueError('Hermes snapshot disk gate')
+    if shutil.disk_usage(BASE).free<1024**3+required:raise ValueError('Hermes snapshot disk gate')
     destination=BASE/'runs'/str(run_id);destination.mkdir(mode=0o700,parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='hermes-canary-',dir=destination) as temporary:
         schemas=snapshot(Path(temporary));canary(root,Path(temporary),schemas,destination/'canary.log')
@@ -200,8 +233,18 @@ def apply(request,run_id):
         'backup':str(backup),'units':units,'schemas':schemas,'run_id':run_id}
     common.atomic(BASE/'pending.json',tx)
     try:
-        for unit in CONSUMERS:ctl('stop',unit)
-        tx['schemas']=snapshot(backup/'databases');common.atomic(BASE/'pending.json',tx)
+        for unit in common.WATCH_TIMERS:ctl('stop',unit)
+        if any(common.busy_service(u) for u in common.WATCH_SERVICES):
+            resume(units);(BASE/'pending.json').unlink();return False
+        try:ctl('stop','hermes-gateway.service')
+        except subprocess.CalledProcessError:
+            if active('hermes-gateway.service'):
+                resume(units);(BASE/'pending.json').unlink();return False
+            raise
+        ctl('stop','hermes-dashboard.service')
+        tx['schemas']=snapshot_archive(backup/'sqlite-backup.zip')
+        tx['sqlite_archive_sha256']=common.digest(backup/'sqlite-backup.zip')
+        common.atomic(BASE/'pending.json',tx)
         # Snapshot configs privately; never replay auth.json in recovery.
         for path in state_files():
             target=backup/'config'/path.relative_to(HOME);target.parent.mkdir(parents=True,exist_ok=True)
@@ -240,7 +283,19 @@ def poll():
         raise ValueError('Hermes request provenance')
     done=BASE/'last-run.json'
     if done.exists() and json_file(done).get('run_id')==run['id']:return
+    failed=BASE/'failed-run.json'
+    control_hash=common.digest(Path(__file__))
+    if failed.exists():
+        previous=json_file(failed)
+        if previous.get('run_id')==run['id'] and previous.get('control_sha256')==control_hash:return
     request=request_artifact(run)
     blocked=BASE/'blocked.json'
     if blocked.exists() and json_file(blocked).get('candidate_sha')==request['candidate_sha']:return
-    if apply(request,run['id']):common.atomic(done,{'run_id':run['id']})
+    try:
+        completed=apply(request,run['id'])
+    except Exception as error:
+        common.atomic(failed,{'run_id':run['id'],'control_sha256':control_hash,'error_type':type(error).__name__})
+        raise
+    if completed:
+        common.atomic(done,{'run_id':run['id']})
+        failed.unlink(missing_ok=True)
