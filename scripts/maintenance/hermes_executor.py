@@ -36,6 +36,8 @@ def command(args,root=None,timeout=120,log=None):
 
 def ctl(action,unit):
     if unit not in CONSUMERS:raise ValueError('Hermes unit outside scope')
+    if action=='stop' and unit=='hermes-gateway.service':
+        return command([str(SHIM),'gateway','stop'],timeout=240)
     return command(['systemctl','--user',action,unit],timeout=240)
 
 
@@ -166,7 +168,8 @@ def recover():
 def apply(request,run_id):
     root=validate_local(request)
     state=json_file(HOME/'gateway_state.json')
-    if not gateway_idle(state,time.time()):print('Hermes update deferred: active work');return False
+    if request['action']=='promote' and not common.gateway_quiet():
+        print('Hermes update deferred: active work');return False
     if request['action']=='promote' and state.get('code_sha')!=request['candidate_sha']:
         current=tuple(int(n) for n in state.get('code_version','0.0.0').lstrip('v').split('+')[0].split('.')[:3])
         target=tuple(int(n) for n in request['tag'].lstrip('v').split('.'))
@@ -184,7 +187,7 @@ def apply(request,run_id):
         common.notify('hermes-check-'+str(run_id),'Executor do Hermes validado na VM, fora do gateway: recibo dos testes, release oficial, canário de bancos em cópias privadas e saúde conferidos. Este teste não trocou a versão em produção.')
         return True
     state=json_file(HOME/'gateway_state.json')
-    if not gateway_idle(state,time.time()):return False
+    if not common.gateway_quiet():return False
     if state.get('code_sha')==request['candidate_sha']:
         common.atomic(BASE/'last-success.json',{'run_id':run_id,'candidate_sha':request['candidate_sha'],'result':'already_current'})
         return True

@@ -87,5 +87,12 @@ class ExecutorTests(unittest.TestCase):
             binary.assert_not_called()
             self.assertTrue((base/'pending.json').exists())
 
+    def test_gateway_stop_keeps_official_live_work_refusal(self):
+        with patch.object(e,'run',return_value='') as run:
+            e.ctl('stop','hermes-gateway.service')
+            args=run.call_args.args[0]
+            self.assertEqual(args,[e.LAUNCHER,'gateway','stop'])
+            self.assertNotIn('--yes',args)
+
 
 if __name__=='__main__': unittest.main()

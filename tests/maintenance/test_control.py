@@ -45,5 +45,14 @@ class ControlTests(unittest.TestCase):
                        dict(updated_at=(now-dt.timedelta(minutes=5)).isoformat())]:
             self.assertFalse(c.gateway_idle(dict(state, **change),now.timestamp()))
 
+    def test_live_control_overrides_stale_counter_but_never_live_delegation(self):
+        now=dt.datetime.now(dt.timezone.utc)
+        state=dict(pid=123,updated_at=now.isoformat(),active_agents=1,active_work=None,gateway_state='running')
+        live=dict(pid=123,active_agents=0,active_work=[])
+        self.assertTrue(c.control_idle(state,live,123,now.timestamp()))
+        self.assertFalse(c.control_idle(state,dict(live,active_work=[{'kind':'delegation'}]),123,now.timestamp()))
+        self.assertFalse(c.control_idle(state,dict(live,pid=456),123,now.timestamp()))
+        self.assertFalse(c.control_idle(state,None,123,now.timestamp()))
+
 
 if __name__ == '__main__': unittest.main()

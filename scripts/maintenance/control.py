@@ -46,3 +46,15 @@ def gateway_idle(state, now):
     return (0 <= age < 180 and type(state.get('active_agents')) is int
             and state['active_agents'] == 0 and not state.get('active_work')
             and state.get('gateway_state') == 'running')
+
+
+def control_idle(state, live, owner_pid, now):
+    if not isinstance(live, dict) or type(owner_pid) is not int or owner_pid<=1:
+        return False
+    if live.get('pid')!=owner_pid or state.get('pid')!=owner_pid:
+        return False
+    # The live response covers delegations omitted by the file aggregate.
+    if type(live.get('active_agents')) is not int or not isinstance(live.get('active_work'),list):
+        return False
+    current=dict(state,active_agents=live['active_agents'],active_work=live['active_work'])
+    return gateway_idle(current,now)

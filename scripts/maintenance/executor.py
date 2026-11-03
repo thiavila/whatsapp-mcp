@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import sqlite3
@@ -20,7 +21,7 @@ import time
 import urllib.request
 import zipfile
 
-from control import REPOSITORY, WORKFLOW, admit_run, gateway_idle, require_sha
+from control import REPOSITORY, WORKFLOW, admit_run, gateway_idle, control_idle, require_sha
 from release_ci import verify
 
 BASE = Path('/home/thiago/hermes-maintenance/mcp-deploy')
@@ -61,11 +62,34 @@ def atomic(path, data):
 def ctl(action, unit):
     if unit not in CONSUMERS + [b[0] for b in BRIDGES]:
         raise ValueError('unknown unit')
+    if action=='stop' and unit=='hermes-gateway.service':
+        # Native refusal protects turns/delegations that start after the idle probe.
+        return run([LAUNCHER,'gateway','stop'],timeout=240)
     return run(['systemctl', '--user', action, unit], timeout=240)
 
 
 def active(unit):
     return run(['systemctl', '--user', 'show', unit, '-p', 'ActiveState', '--value']) == 'active'
+
+
+
+def gateway_quiet():
+    try:
+        state=json.loads((HERMES/'gateway_state.json').read_text())
+        pid=int(run(['systemctl','--user','show','hermes-gateway.service','-p','MainPID','--value']))
+        shim=Path(LAUNCHER).read_text()
+        match=re.search(r'exec (/home/thiago/worktrees/hermes-[A-Za-z0-9_-]+)/\.hermes/bin/hermes',shim)
+        if not match or pid<=1:return False
+        python=Path(f'/proc/{pid}/exe').resolve()
+        if not str(python).startswith('/home/thiago/.hermes/tools/python-'):return False
+        code=("import sys,json;from pathlib import Path;sys.path.insert(0,"+repr(match.group(1))+");"
+              "from gateway.control_socket import query_gateway_control;"
+              "print(json.dumps(query_gateway_control(Path('/home/thiago/.hermes'),'active-work',timeout=7)))")
+        env={'HOME':'/home/thiago','HERMES_HOME':str(HERMES),'PATH':'/usr/bin:/bin','LANG':'C.UTF-8'}
+        live=json.loads(run([str(python),'-I','-c',code],timeout=10,env=env))
+        return control_idle(state,live,pid,time.time())
+    except (OSError,ValueError,subprocess.SubprocessError):
+        return False
 
 
 def notify(key, message):
@@ -215,7 +239,7 @@ def artifact(run_id, sha, destination):
 
 def deploy(run_id, sha):
     require_sha(sha); ensure_clean()
-    if not gateway_idle(json.loads((HERMES/'gateway_state.json').read_text()),time.time()):
+    if not gateway_quiet():
         print('deferred: Hermes is busy or its state is stale'); return
     if any(not active(unit) or not health(port) for unit,port,_ in BRIDGES):
         raise ValueError('all bridges must be healthy before deployment')
@@ -240,7 +264,7 @@ def deploy(run_id, sha):
         'schemas':schemas,'consumers':{u:active(u) for u in CONSUMERS},
         'bridges':{u:active(u) for u,_,_ in BRIDGES}}
     shutil.copyfile(BINARY,tx['old_binary']); Path(tx['old_binary']).chmod(0o700)
-    if not gateway_idle(json.loads((HERMES/'gateway_state.json').read_text()),time.time()):
+    if not gateway_quiet():
         print('deferred: work started during staging'); return
     if any(active(u) for u in ['wa-indexa-watch.service', 'melancia-roberto-watch.service']):
         print('deferred: watcher is processing work'); return
