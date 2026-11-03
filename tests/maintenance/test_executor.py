@@ -69,9 +69,9 @@ class ExecutorTests(unittest.TestCase):
             for name in ['whatsapp.db','messages.db']:
                 with closing(sqlite3.connect(store/name)) as db, db:db.execute('CREATE TABLE live(id INTEGER)')
             schemas={n:e.db_schema(store/n) for n in ['whatsapp.db','messages.db']}
-            tx=dict(sha='a'*40,previous_sha='b'*40,old_binary=str(base/'old'),schemas={str(store):schemas},consumers={},bridges={})
+            tx=dict(schema_fingerprint_version=2,sha='a'*40,previous_sha='b'*40,old_binary=str(base/'old'),schemas={str(store):schemas},consumers={},bridges={})
             e.atomic(base/'pending.json',tx)
-            with patch.object(e,'BASE',base),patch.object(e,'BRIDGES',[('bridge',1,store)]),patch.object(e,'CONSUMERS',[]),patch.object(e,'ctl'),patch.object(e,'ensure_clean'),patch.object(e,'run',return_value='a'*40) as run,patch.object(e,'atomic_binary') as binary,patch.object(e,'notify'):
+            with patch.object(e,'BASE',base),patch.object(e,'finish_pending_if_healthy',return_value=False),patch.object(e,'BRIDGES',[('bridge',1,store)]),patch.object(e,'CONSUMERS',[]),patch.object(e,'ctl'),patch.object(e,'ensure_clean'),patch.object(e,'run',return_value='a'*40) as run,patch.object(e,'atomic_binary') as binary,patch.object(e,'notify'):
                 e.recover()
                 binary.assert_called_once_with(base/'old')
                 self.assertFalse((base/'pending.json').exists())
@@ -81,8 +81,8 @@ class ExecutorTests(unittest.TestCase):
     def test_recovery_refuses_old_binary_on_changed_schema(self):
         with tempfile.TemporaryDirectory() as temporary:
             base=Path(temporary);store=base/'store';store.mkdir()
-            e.atomic(base/'pending.json',dict(sha='a'*40,schemas={str(store):{'whatsapp.db':'expected'}}))
-            with patch.object(e,'BASE',base),patch.object(e,'BRIDGES',[('bridge',1,store)]),patch.object(e,'CONSUMERS',[]),patch.object(e,'ctl'),patch.object(e,'db_schema',return_value='changed'),patch.object(e,'notify'),patch.object(e,'atomic_binary') as binary,self.assertRaisesRegex(ValueError,'unsafe rollback'):
+            e.atomic(base/'pending.json',dict(schema_fingerprint_version=2,sha='a'*40,schemas={str(store):{'whatsapp.db':'expected'}}))
+            with patch.object(e,'BASE',base),patch.object(e,'finish_pending_if_healthy',return_value=False),patch.object(e,'BRIDGES',[('bridge',1,store)]),patch.object(e,'CONSUMERS',[]),patch.object(e,'ctl'),patch.object(e,'db_schema',return_value='changed'),patch.object(e,'notify'),patch.object(e,'atomic_binary') as binary,self.assertRaisesRegex(ValueError,'unsafe rollback'):
                 e.recover()
             binary.assert_not_called()
             self.assertTrue((base/'pending.json').exists())
@@ -103,6 +103,53 @@ class ExecutorTests(unittest.TestCase):
         with patch.object(e,'ctl') as ctl:
             e.resume_consumers({u:True for u in e.CONSUMERS})
         self.assertEqual([call.args[1] for call in ctl.call_args_list],['hermes-gateway.service',*e.WATCH_TIMERS])
+
+    def test_normal_app_sync_version_is_not_a_schema_migration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            database=Path(temporary)/'whatsapp.db'
+            with closing(sqlite3.connect(database)) as connection,connection:
+                connection.execute('CREATE TABLE whatsmeow_app_state_version(name TEXT PRIMARY KEY,version INTEGER)')
+                connection.execute('CREATE TABLE whatsmeow_version(version INTEGER)')
+                connection.execute("INSERT INTO whatsmeow_app_state_version VALUES('regular',1)")
+                connection.execute('INSERT INTO whatsmeow_version VALUES(10)')
+            before=e.db_schema(database)
+            with closing(sqlite3.connect(database)) as connection,connection:
+                connection.execute('UPDATE whatsmeow_app_state_version SET version=2')
+            self.assertEqual(e.db_schema(database),before)
+            with closing(sqlite3.connect(database)) as connection,connection:
+                connection.execute('UPDATE whatsmeow_version SET version=11')
+            self.assertNotEqual(e.db_schema(database),before)
+
+    def test_legacy_journal_is_rebuilt_from_backups_without_stopping_services(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary);store=base/'store';store.mkdir()
+            backup=base/'releases'/('a'*40)/'backups/0';backup.mkdir(parents=True)
+            for name in ['whatsapp.db','messages.db']:
+                for directory in [store,backup]:
+                    with closing(sqlite3.connect(directory/name)) as db:db.execute('CREATE TABLE stable(id INTEGER)')
+            tx=dict(sha='a'*40,schemas={str(store):{'whatsapp.db':'old-hash','messages.db':'old-hash'}})
+            with patch.object(e,'BASE',base),patch.object(e,'BRIDGES',[('unit',1,store)]),patch.object(e,'ctl') as ctl:
+                upgraded=e.upgrade_journal(tx)
+                ctl.assert_not_called()
+            self.assertEqual(upgraded['schema_fingerprint_version'],2)
+            self.assertEqual(upgraded['schemas'][str(store)]['whatsapp.db'],e.db_schema(backup/'whatsapp.db'))
+
+    def test_healthy_pipeline_candidate_is_finalized_without_code_or_data_rollback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary);sha='a'*40
+            candidate=base/'releases'/sha/'whatsapp-bridge';candidate.parent.mkdir(parents=True);candidate.write_bytes(b'verified binary')
+            binary=base/'live-binary';binary.write_bytes(candidate.read_bytes())
+            state=base/'gateway_state.json';state.write_text(json.dumps({'gateway_state':'running','platforms':{'telegram':{'state':'connected'}}}))
+            store=base/'store';store.mkdir()
+            tx=dict(sha=sha,previous_sha='b'*40,run_id=1,schemas={str(store):{'whatsapp.db':'schema'}},consumers={'hermes-gateway.service':True})
+            e.atomic(base/'pending.json',tx)
+            proof=dict(repository={'full_name':e.REPOSITORY},head_repository={'full_name':e.REPOSITORY},workflow_id=7,path=e.WORKFLOW,head_branch='main',head_sha=sha,event='push',status='completed',conclusion='success')
+            with patch.object(e,'BASE',base),patch.object(e,'HERMES',base),patch.object(e,'BINARY',binary),patch.object(e,'BRIDGES',[('bridge',1,store)]),patch.object(e,'run',return_value=sha),patch.object(e,'active',return_value=True),patch.object(e,'health',return_value=True),patch.object(e,'db_schema',return_value='schema'),patch.object(e,'api',side_effect=[{'id':7},proof]),patch.object(e,'verify'),patch.object(e,'resume_consumers') as resume,patch.object(e,'ctl') as ctl,patch.object(e,'notify'):
+                self.assertTrue(e.finish_pending_if_healthy(tx))
+                ctl.assert_not_called();resume.assert_called_once_with(tx['consumers'])
+            self.assertEqual(json.loads((base/'last-success.json').read_text())['sha'],sha)
+            self.assertFalse((base/'pending.json').exists())
+            self.assertEqual(binary.read_bytes(),b'verified binary')
 
 
 if __name__=='__main__': unittest.main()

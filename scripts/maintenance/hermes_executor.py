@@ -167,7 +167,7 @@ def resume(states):
 
 
 def healthy(states,sha):
-    for _ in range(45):
+    for _ in range(150):
         current=json_file(HOME/'gateway_state.json')
         if (not states['hermes-gateway.service'] or
             (active('hermes-gateway.service') and current.get('gateway_state')=='running'

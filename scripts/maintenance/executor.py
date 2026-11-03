@@ -122,7 +122,8 @@ def db_schema(path):
         rows = connection.execute("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name").fetchall()
         version = connection.execute('PRAGMA user_version').fetchone()[0]
         # Include migration bookkeeping values without logging any data.
-        tables = [row[1] for row in rows if row[0] == 'table' and 'version' in row[1].lower()]
+        migration_tables={'whatsmeow_version','schema_version','schema_migrations','alembic_version','db_version'}
+        tables=[row[1] for row in rows if row[0]=='table' and row[1].lower() in migration_tables]
         metadata = []
         for table in tables:
             quoted = '"' + table.replace('"','""') + '"'
@@ -194,10 +195,50 @@ def resume_consumers(states):
         if states.get(unit): ctl('start', unit)
 
 
+
+def upgrade_journal(tx):
+    if tx.get('schema_fingerprint_version')==2:return tx
+    # v1 accidentally included normal WhatsApp app-state sync versions.
+    # Reconstruct only from the deployment's verified stopped-store backups.
+    schemas={}
+    for index,(_,_,store) in enumerate(BRIDGES):
+        backup=BASE/'releases'/tx['sha']/'backups'/str(index)
+        schemas[str(store)]={name:db_schema(backup/name) for name in ['whatsapp.db','messages.db']}
+        if schemas[str(store)]!={name:db_schema(store/name) for name in schemas[str(store)]}:
+            raise ValueError('actual migration differs from retained backups')
+    tx=dict(tx,schemas=schemas,schema_fingerprint_version=2)
+    atomic(BASE/'pending.json',tx)
+    return tx
+
+
+def finish_pending_if_healthy(tx):
+    if run(['git','-C',str(REPO),'rev-parse','HEAD'])!=tx['sha']:return False
+    candidate=BASE/'releases'/tx['sha']/'whatsapp-bridge'
+    if not candidate.is_file() or digest(candidate)!=digest(BINARY):return False
+    for unit,port,store in BRIDGES:
+        if not active(unit) or not health(port):return False
+        if {n:db_schema(store/n) for n in tx['schemas'][str(store)]}!=tx['schemas'][str(store)]:return False
+    if tx['consumers'].get('hermes-gateway.service'):
+        if not active('hermes-gateway.service'):return False
+        for _ in range(150):
+            state=json.loads((HERMES/'gateway_state.json').read_text())
+            if state.get('gateway_state')=='running' and state.get('platforms',{}).get('telegram',{}).get('state')=='connected':break
+            time.sleep(2)
+        else:return False
+    workflow=api(f'repos/{REPOSITORY}/actions/workflows/release.yml')
+    admitted=api(f'repos/{REPOSITORY}/actions/runs/{int(tx["run_id"])}')
+    admit_run(admitted,workflow['id'],tx['sha']);verify(tx['sha'])
+    resume_consumers(tx['consumers'])
+    atomic(BASE/'last-success.json',tx);(BASE/'pending.json').unlink()
+    notify('success-'+tx['sha'],f"MCP atualizado e validado pela rotina da VM: {tx['previous_sha'][:12]} → {tx['sha'][:12]}. Origem/CI do pipeline, bancos compatíveis, três bridges autenticadas e gateway retomado. Dados e sessões atuais preservados.")
+    return True
+
+
 def recover():
     journal = BASE / 'pending.json'
     if not journal.exists(): return
-    tx = json.loads(journal.read_text())
+    tx = upgrade_journal(json.loads(journal.read_text()))
+    if finish_pending_if_healthy(tx):return 'completed'
     # Same-schema updates only; always preserve current sessions/messages.
     for unit in CONSUMERS: ctl('stop', unit)
     for unit, _, _ in BRIDGES: ctl('stop', unit)
@@ -266,7 +307,7 @@ def deploy(run_id, sha):
             target=Path(temp)/str(index)
             schemas[str(store)]=copy_databases(store,target)
             offline_canary(binary,target,schemas[str(store)])
-    tx={'sha':sha,'run_id':run_id,'previous_sha':previous,'old_binary':str(release/'previous-binary'),
+    tx={'schema_fingerprint_version':2,'sha':sha,'run_id':run_id,'previous_sha':previous,'old_binary':str(release/'previous-binary'),
         'schemas':schemas,'consumers':{u:active(u) for u in CONSUMERS},
         'bridges':{u:active(u) for u,_,_ in BRIDGES}}
     shutil.copyfile(BINARY,tx['old_binary']); Path(tx['old_binary']).chmod(0o700)
@@ -299,7 +340,7 @@ def deploy(run_id, sha):
                 raise ValueError('live schema changed after candidate preflight')
         resume_consumers(tx['consumers'])
         if tx['consumers']['hermes-gateway.service']:
-            for attempt in range(30):
+            for attempt in range(150):
                 state=json.loads((HERMES/'gateway_state.json').read_text())
                 if active('hermes-gateway.service') and state.get('gateway_state')=='running' and state.get('platforms',{}).get('telegram',{}).get('state')=='connected': break
                 time.sleep(2)
@@ -307,8 +348,9 @@ def deploy(run_id, sha):
         atomic(BASE/'last-success.json',tx)
         (BASE/'pending.json').unlink()
         notify('success-'+sha,f'MCP atualizado pela rotina da VM: {previous[:12]} → {sha[:12]}. CI oficial aprovado; canário offline em cópias dos três bancos, backups privados e três bridges conectados. Hermes principal retomado. Rollback conserva os bancos e sessões atuais.')
-    except BaseException:
-        recover()
+    except BaseException as error:
+        atomic(BASE/'last-error.json',{'sha':sha,'type':type(error).__name__,'message':str(error)})
+        if recover()=='completed':return
         raise
 
 
