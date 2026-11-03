@@ -5,8 +5,7 @@ on:
     paths:
       - 'whatsapp-bridge/**'
       - 'whatsapp-mcp-server/**'
-      - 'scripts/maintenance/**'
-      - '.github/workflows/**'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
 permissions:
   contents: read
