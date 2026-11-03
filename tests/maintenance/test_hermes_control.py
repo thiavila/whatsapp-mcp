@@ -2,6 +2,8 @@ import datetime as dt
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
+import hermes_executor
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'scripts/maintenance'))
 from hermes_control import stable_release,candidate_root,validate_request
@@ -26,6 +28,14 @@ class HermesControlTests(unittest.TestCase):
         validate_request(request)
         for change in [dict(command='sh'),dict(action='shell'),dict(candidate_sha='bad'),dict(tag='main')]:
             with self.subTest(change=change),self.assertRaises(ValueError):validate_request(dict(request,**change))
+
+    def test_isolated_command_keeps_user_service_bus(self):
+        with patch.object(hermes_executor.subprocess,'check_output',return_value=b'active') as call:
+            self.assertEqual(hermes_executor.command(['systemctl','--user','show']), 'active')
+        env=call.call_args.kwargs['env']
+        self.assertEqual(env['XDG_RUNTIME_DIR'],'/run/user/1000')
+        self.assertEqual(env['DBUS_SESSION_BUS_ADDRESS'],'unix:path=/run/user/1000/bus')
+        self.assertNotIn('ANTHROPIC_API_KEY',env)
 
 
 if __name__=='__main__':unittest.main()

@@ -28,7 +28,8 @@ SHIM=Path('/home/thiago/.local/bin/hermes')
 
 
 def command(args,root=None,timeout=120,log=None):
-    env={'HOME':'/home/thiago','HERMES_HOME':str(HOME),'PATH':'/home/thiago/.local/bin:/usr/local/bin:/usr/bin:/bin','LANG':'C.UTF-8'}
+    env={'HOME':'/home/thiago','HERMES_HOME':str(HOME),'PATH':'/home/thiago/.local/bin:/usr/local/bin:/usr/bin:/bin','LANG':'C.UTF-8',
+         'XDG_RUNTIME_DIR':'/run/user/1000','DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/1000/bus'}
     if log is None:return subprocess.check_output(args,cwd=root,env=env,stdin=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=timeout).decode().strip()
     with Path(log).open('ab') as stream:
         subprocess.run(args,cwd=root,env=env,stdin=subprocess.DEVNULL,stdout=stream,stderr=subprocess.STDOUT,timeout=timeout,check=True)
