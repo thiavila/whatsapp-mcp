@@ -51,6 +51,8 @@ AI client <-> Python MCP server <-> Go/WhatsMeow bridge <-> WhatsApp
 
 Both components are required. The Go bridge stays running; the MCP client normally starts and stops the Python server automatically.
 
+For the managed Hermes installation, see the [Indexa REST authentication rollout](docs/maintenance/INDEXA-AUTH-RUNBOOK.md) for the config-only official pipeline, activation gates and recovery contract.
+
 ## Requirements
 
 - A WhatsApp account and the WhatsApp mobile app for QR pairing.

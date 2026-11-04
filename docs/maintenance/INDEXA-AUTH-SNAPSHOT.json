@@ -1,0 +1,17 @@
+{
+  ".github/workflows/indexa-auth-release.yml": "81154a2338f5db79375d4dd93bdb54be8d2bf0ceaa182508577205f90ca47f63",
+  "docs/maintenance/INDEXA-AUTH-PLAN.md": "e13718b8c8330118a65652420aed6ba9d4ea517c8171b139dd68b6ccdbcaa895",
+  "docs/maintenance/INDEXA-AUTH-RUNBOOK.md": "266ff3831c4e1925f166835e5bcf76a02061c772f12976788df44c442805ae25",
+  "ops/indexa-auth.json": "1ed5b4d0ccc8da6d44d8d6292b20e3dccc2750bccde49010925cf8a781160525",
+  "scripts/auth/build.py": "c2345e9e17dff090ee9fb607ab42888e158be333816b8875cbc6e470d16bb641",
+  "scripts/ci/check.py": "4842a4b872481aa70c1375a02b11e7b0574100d140312445545651794d559eb0",
+  "scripts/maintenance/executor.py": "7be7b30aa0dad490864c9d012e9c1a5aa79bbd5518a26e7b390c57080ac3187e",
+  "scripts/maintenance/indexa_auth_common.py": "14f5a0be3fab63b0255f519e03d202f556c0de42754e333e4236cbf3341acc36",
+  "scripts/maintenance/indexa_auth_config.py": "3f54aa38911795318a8755154372ae4f347fc62be0fe98651d78fe895321d2cf",
+  "scripts/maintenance/indexa_auth_executor.py": "1f2e1b11907ad4531f6a5997c9be99f73d5e3d32e88290b876a02cac95ca4ed2",
+  "scripts/maintenance/indexa_auth_probe.py": "18bea3c5a85eda602273a454611f45e114b025e4b7cfb26d781471c6e0e40d5d",
+  "scripts/maintenance/indexa_auth_runtime.py": "fee6ceb816e2888b6c09db04f2a2310d1e2f5cd6c14788a6d23440112b491e83",
+  "scripts/maintenance/install_executor.py": "11afd90748b492a8581796c23b5d17198c60d331222a6e20e2f36d8a168afb2f",
+  "tests/auth/test_auth.py": "5093fc1e7a740b91cb3a82c3f614a5803c9ce679aec6b2ee95dafcd956a8caa3",
+  "tests/client/test_transitions.py": "2ec09d33ea3459b6f36356f6373b714e24485fbef616838382e5ed0fe995dfb0"
+}

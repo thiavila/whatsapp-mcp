@@ -363,6 +363,10 @@ def poll():
     BASE.mkdir(mode=0o700,parents=True,exist_ok=True)
     with (BASE/'executor.lock').open('w') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        # Auth journals fence restarts in every other lane, including recovery.
+        import indexa_auth_executor
+        if not indexa_auth_executor.poll_safely():
+            return
         recover()
         import hermes_executor
         hermes_executor.poll()

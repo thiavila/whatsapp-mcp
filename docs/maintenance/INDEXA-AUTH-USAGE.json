@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "budget_usd": 5,
+  "estimated_cost_usd": 1.1790804000000001,
+  "model": "claude-opus-5-5",
+  "calls": [
+    {
+      "file": "INDEXA-AUTH-OPUS55.json",
+      "central": "/Users/thiagoavila/Github/Pessoal/Avila Ventures/cybersecurity-2026-10-28/reviews/hermes-indexa-auth-20261104-opus55-r1.json",
+      "sha256": "234623179bd3f7532f48b08b5628c61b0f4c4426fea6cd2f4ecfe8cda751bf22",
+      "session_id": "f33ac83a-1027-4a1f-b29c-0c203144d94a",
+      "cost_usd": 0.8493968000000001,
+      "usage": {
+        "input_tokens": 20,
+        "output_tokens": 16327,
+        "cache_creation_input_tokens": 57346,
+        "cache_read_input_tokens": 320044
+      },
+      "model": "claude-opus-5-5"
+    },
+    {
+      "file": "INDEXA-AUTH-OPUS55-R2.json",
+      "central": "/Users/thiagoavila/Github/Pessoal/Avila Ventures/cybersecurity-2026-10-28/reviews/hermes-indexa-auth-20261104-opus55-r2.json",
+      "sha256": "1983dd781da6e2cb95f9589f1d752d4a45d807c2e3679d283f855c5148e8befa",
+      "session_id": "06eea229-6fc4-44bf-acec-6742881b3e8c",
+      "cost_usd": 0.3296836,
+      "usage": {
+        "input_tokens": 14,
+        "output_tokens": 3771,
+        "cache_creation_input_tokens": 28522,
+        "cache_read_input_tokens": 130158
+      },
+      "model": "claude-opus-5-5"
+    }
+  ],
+  "tokens": {
+    "input_tokens": 34,
+    "output_tokens": 20098,
+    "cache_creation_input_tokens": 85868,
+    "cache_read_input_tokens": 450202
+  },
+  "final_verdict": "CODE GO; no live GO",
+  "reviewed_snapshot": "INDEXA-AUTH-SNAPSHOT-R2.json"
+}

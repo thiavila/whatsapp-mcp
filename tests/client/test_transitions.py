@@ -16,6 +16,7 @@ sys.path[:0] = [str(ROOT / 'scripts/client'), str(ROOT / 'scripts/maintenance')]
 import config as cfg
 import client_executor as ce
 import install_executor as installer
+import indexa_auth_executor as auth
 from test_runtime import home
 
 
@@ -134,7 +135,7 @@ class TransitionTests(unittest.TestCase):
             root = Path(temp); sha = 'a' * 40
             run = {'status': 'completed', 'conclusion': 'success', 'head_sha': sha, 'id': 1}
             fake_hermes = Mock()
-            with patch.object(ce.e, 'BASE', root), patch.object(ce.e, 'recover'), patch.dict(sys.modules, {'hermes_executor': fake_hermes}), patch.object(ce, 'poll', side_effect=ValueError('client blocked')), patch.object(ce.e, 'api', side_effect=[{'id': 1, 'path': ce.e.WORKFLOW}, {'workflow_runs': [run]}, run]), patch.object(ce.e, 'admit_run'), patch.object(ce.e, 'verify'), patch.object(ce.e, 'deploy') as go:
+            with patch.object(auth, 'poll_safely', return_value=True), patch.object(ce.e, 'BASE', root), patch.object(ce.e, 'recover'), patch.dict(sys.modules, {'hermes_executor': fake_hermes}), patch.object(ce, 'poll', side_effect=ValueError('client blocked')), patch.object(ce.e, 'api', side_effect=[{'id': 1, 'path': ce.e.WORKFLOW}, {'workflow_runs': [run]}, run]), patch.object(ce.e, 'admit_run'), patch.object(ce.e, 'verify'), patch.object(ce.e, 'deploy') as go:
                 ce.e.poll(); go.assert_called_once_with(1, sha)
             self.assertTrue((root / 'client-last-error.json').exists())
 
