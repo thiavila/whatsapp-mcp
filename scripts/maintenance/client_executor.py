@@ -210,13 +210,15 @@ def processes():
     for path in Path('/proc').iterdir():
         if not path.name.isdigit():
             continue
+        relevant = False
         try:
             args = (path / 'cmdline').read_bytes().split(b'\0')
+            if not any(LEGACY.encode() in a or b'/mcp-deploy/client-releases/' in a for a in args):
+                continue
+            relevant = True
             # readlink retains '(deleted)' mapped executables; strict resolve
             # would silently hide precisely the stale children we must fence.
             exe = Path(os.readlink(path / 'exe'))
-            if not any(LEGACY.encode() in a or b'/mcp-deploy/client-releases/' in a for a in args):
-                continue
             if 'python' not in exe.name and not exe.name.startswith('uv'):
                 continue
             group = (path / 'cgroup').read_text()
@@ -224,6 +226,8 @@ def processes():
                 raise ValueError('unmanaged WhatsApp client process; externally fence first')
             records.append((int(path.name), str(exe)))
         except PermissionError:
+            if relevant:
+                raise ValueError('cannot inspect relevant runtime process') from None
             try:
                 if path.stat().st_uid == os.getuid():
                     raise ValueError('cannot inspect same-user runtime process')
