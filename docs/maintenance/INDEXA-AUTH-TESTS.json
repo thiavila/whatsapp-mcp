@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "base": "dd4f7f95b4ec5b70ed3ed631ebb983162b7ccba3",
+  "checked_at": "2026-11-04T01:43:05.686379+00:00",
+  "host": "macOS",
+  "python": "3.11.18",
+  "entrypoint": "python3.11 scripts/ci/check.py",
+  "exit_code": 0,
+  "checks": {
+    "go_test": "pass",
+    "product_python_tests": 36,
+    "maintenance_tests": 22,
+    "client_tests": 37,
+    "auth_tests": 26,
+    "workflow_actionlint": "pass",
+    "git_diff_check": "pass"
+  },
+  "validation_scope": "local synthetic; real HTTP loopback uses synthetic server only",
+  "production_writes": false,
+  "production_activation": false,
+  "official_ci": "coordinator pending",
+  "python_test_total": 121,
+  "after_R2_fixes": true
+}

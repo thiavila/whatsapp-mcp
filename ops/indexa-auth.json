@@ -1,0 +1,1 @@
+{"schema":1,"component":"indexa-rest","port":8080,"auth_mode":"enforce","require_token":true,"token_ref":"indexa-rest"}

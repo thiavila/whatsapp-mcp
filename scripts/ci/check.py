@@ -45,6 +45,7 @@ def main():
         if (ROOT / 'tests/maintenance').exists():
             run([python, '-m', 'unittest', 'discover', '-s', 'tests/maintenance'])
         run([python, '-m', 'unittest', 'discover', '-s', 'tests/client'])
+        run([python, '-m', 'unittest', 'discover', '-s', 'tests/auth'])
     print('Code CI passed; no service started.', flush=True)
 
 

@@ -1,0 +1,40 @@
+name: Indexa REST auth release
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ops/indexa-auth.json'
+      - 'scripts/auth/**'
+      - 'scripts/maintenance/indexa_auth*.py'
+      - 'scripts/maintenance/executor.py'
+      - '.github/workflows/indexa-auth-release.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+  checks: read
+  pull-requests: read
+concurrency:
+  group: indexa-auth-release
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Require merged PR and official code CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/maintenance/release_ci.py "${{ github.sha }}"
+      - name: Produce config and source digests without credentials
+        run: python3 scripts/auth/build.py --sha "${{ github.sha }}" --output /tmp/indexa-auth-release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: indexa-auth-release
+          path: /tmp/indexa-auth-release/*
+          retention-days: 14
+          if-no-files-found: error
