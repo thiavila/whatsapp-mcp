@@ -293,6 +293,11 @@ def deploy(run_id, sha):
     run(['git','-C',str(REPO),'fetch','--quiet','origin','main'])
     if run(['git','-C',str(REPO),'rev-parse','origin/main'])!=sha:
         print('superseded release; waiting for current main'); return
+    import client_executor
+    if not client_executor.source_ready(sha):
+        print('deferred: client activation required before exposing Python pins')
+        notify('go-client-activation-'+sha,'Release das bridges aguardando ativação segura dos clientes MCP. Binário, dados e serviços atuais preservados; retomo automaticamente quando o gate do runner passar.')
+        return
     previous=require_sha(run(['git','-C',str(REPO),'rev-parse','HEAD']))
     release=BASE/'releases'/sha
     release.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -361,6 +366,9 @@ def poll():
         recover()
         import hermes_executor
         hermes_executor.poll()
+        # Same external lock; client-only publication never stops the bridges.
+        import client_executor
+        client_executor.poll_safely()
         workflow=api(f'repos/{REPOSITORY}/actions/workflows/release.yml')
         if workflow['path']!=WORKFLOW: raise ValueError('workflow identity mismatch')
         runs=api(f'repos/{REPOSITORY}/actions/workflows/{workflow["id"]}/runs?branch=main&per_page=1')['workflow_runs']

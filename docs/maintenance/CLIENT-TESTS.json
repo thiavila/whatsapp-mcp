@@ -1,0 +1,27 @@
+{
+  "checked_at": 1793752360.6300359,
+  "code_sha256": "d6718ca4da87b45ce2db5083da2fbbb257741482c70de77ac57d851e35510439",
+  "results": {
+    "client": {
+      "exit_code": 0,
+      "tests": 36,
+      "output": "Media downloaded successfully: /tmp/x\n....................................\n----------------------------------------------------------------------\nRan 36 tests in 0.022s\n\nOK\n"
+    },
+    "maintenance": {
+      "exit_code": 0,
+      "tests": 22,
+      "output": "......................\n----------------------------------------------------------------------\nRan 22 tests in 0.300s\n\nOK\n"
+    },
+    "runtime": {
+      "exit_code": 0,
+      "tests": 31,
+      "output": "deferred: client activation required before exposing Python pins\n...............................\n----------------------------------------------------------------------\nRan 31 tests in 0.098s\n\nOK\n"
+    },
+    "actionlint": {
+      "exit_code": 0,
+      "output": ""
+    }
+  },
+  "total_tests": 89,
+  "boundary": "Local macOS/synthetic only. No Linux execution/GitHub CI/status/push/VM writes/real messages. All notification calls mocked. Separate actual pinned uv probe verified explicit env-file suppression."
+}

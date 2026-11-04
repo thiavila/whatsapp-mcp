@@ -1,0 +1,59 @@
+name: MCP client release
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'whatsapp-mcp-server/**'
+      - 'scripts/client/**'
+      - 'scripts/maintenance/client_*.py'
+      - '.github/workflows/client-release.yml'
+      - '.github/apparmor/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+  checks: read
+  pull-requests: read
+concurrency:
+  group: mcp-client-release
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Require merged PR and official code CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/maintenance/release_ci.py "${{ github.sha }}"
+      - name: Build hash-pinned Linux client and test relocated archive
+        run: python3 scripts/client/build.py --sha "${{ github.sha }}" --output /tmp/mcp-client-release
+      - name: Prepare unprivileged sandbox on the ephemeral CI host
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y bubblewrap apparmor
+          if [ -r /sys/module/apparmor/parameters/enabled ] && grep -q Y /sys/module/apparmor/parameters/enabled; then
+            sudo install -m 0644 .github/apparmor/bwrap /etc/apparmor.d/bwrap
+            sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          fi
+      - name: Test with no external network or production HOME
+        run: |
+          python3 - <<'PY'
+          import pathlib,sys
+          sys.path.insert(0,'scripts/maintenance')
+          from client_archive import extract
+          from client_executor import preflight
+          root=pathlib.Path('/tmp/mcp-client-canary')
+          extract('/tmp/mcp-client-release/client.tar.gz',root)
+          print(preflight(root))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mcp-client-release
+          path: /tmp/mcp-client-release/*
+          retention-days: 14
+          if-no-files-found: error

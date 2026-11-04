@@ -1,0 +1,42 @@
+{
+  "estimated_cost_usd": 3.4333653999999996,
+  "cap_usd": 5,
+  "usage": {
+    "input_tokens": 94,
+    "output_tokens": 77456,
+    "cache_creation_input_tokens": 189664,
+    "cache_read_input_tokens": 1832787
+  },
+  "calls": [
+    {
+      "receipt": "CLIENT-REVIEW-OPUS55.json",
+      "session_id": "79039af4-da43-4605-a487-5ced94d58c3d",
+      "model": "claude-opus-5-5",
+      "cost_usd": 1.6710415999999997,
+      "sha256": "3b27d2315b30b91a15601cf183aa2183cf2586dc74c52125cf3f2da54ba56864"
+    },
+    {
+      "receipt": "CLIENT-REVIEW-OPUS55-R2.json",
+      "session_id": "7e16d6a5-9e8e-4e06-ac73-dc5c38206873",
+      "model": "claude-opus-5-5",
+      "cost_usd": 1.1142492,
+      "sha256": "dfd44de9591ab7ce3f6a6cceed896c6db20a396516d8b858889133aa3da33e7a"
+    },
+    {
+      "receipt": "CLIENT-REVIEW-OPUS55-R3.json",
+      "session_id": "c15c716d-f844-4437-83df-4e47a74851db",
+      "model": "claude-opus-5-5",
+      "cost_usd": 0.5745136,
+      "sha256": "5e0e45608f0559c0b85a03570ed23f05dd32f1297e0bdeded11bdb6a49f1bc29"
+    },
+    {
+      "receipt": "CLIENT-REVIEW-OPUS55-FINAL.json",
+      "session_id": "b5356e93-690e-4291-8d8e-8c85c0313668",
+      "model": "claude-opus-5-5",
+      "cost_usd": 0.073561,
+      "sha256": "279ad6264d15fe42ac56259b60c88c8d3ba6a31674cabd46636564f63117b7e4"
+    }
+  ],
+  "final_code_verdict": "GO",
+  "production_verdict": "NO-GO: official Linux CI and live VM gates pending"
+}

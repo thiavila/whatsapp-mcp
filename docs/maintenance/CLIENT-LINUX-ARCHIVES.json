@@ -1,0 +1,19 @@
+{
+  "python": {
+    "sha256": "17c4978a36c496dc53c08899ef8dad1ad2734f6325f08d6033a1e66419e0af26",
+    "compressed_bytes": 30574046,
+    "expanded_bytes": 82184380,
+    "members": 4914,
+    "hash_verified": true,
+    "extraction_verified": false,
+    "limitation": "Official Linux terminfo contains case-distinct symlinks; default macOS volume is case-insensitive. Linux extraction/execution must run in CI."
+  },
+  "uv": {
+    "sha256": "f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f",
+    "compressed_bytes": 16682639,
+    "expanded_bytes": 37927616,
+    "members": 3,
+    "hash_verified": true,
+    "extraction_verified": true
+  }
+}
