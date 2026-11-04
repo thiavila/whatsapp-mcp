@@ -49,6 +49,26 @@ def home(root, style='block'):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_serialized_plan_applies_exact_planned_bytes(self):
+        # The real adapter and journal serialize dictionaries with sort_keys.
+        # Field insertion order must survive that boundary deterministically.
+        for style, env_style in [('block', 'present'), ('block', 'absent'),
+                                 ('block', 'null'), ('block', 'empty'),
+                                 ('flow', 'present')]:
+            for sort_keys in [False, True]:
+                with self.subTest(style=style, env=env_style, sorted=sort_keys), tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp); path = home(root, style)
+                    if env_style != 'present':
+                        text = cfg.read(path); start = text.index('    env:'); end = text.index('other:')
+                        replacement = {'absent': '', 'null': '    env: null\n', 'empty': '    env: {}\n'}[env_style]
+                        path.write_text(text[:start] + replacement + text[end:])
+                    plan = json.loads(json.dumps(ac.inventory(root, POLICY, RUNTIME, cfg), sort_keys=sort_keys))
+                    ac.apply(root, POLICY, RUNTIME, plan, cfg)
+                    after = path.read_bytes()
+                    self.assertEqual(cfg.sha(cfg.read(path)), plan['records'][0]['after'])
+                    ac.apply(root, POLICY, RUNTIME, plan, cfg)
+                    self.assertEqual(path.read_bytes(), after)
+
     def test_exact_targets_preserve_opaque_bytes_and_crlf(self):
         for style in ['block', 'flow']:
             with self.subTest(style=style), tempfile.TemporaryDirectory() as temp:

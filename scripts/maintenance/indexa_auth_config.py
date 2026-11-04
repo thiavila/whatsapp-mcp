@@ -139,7 +139,9 @@ def apply(home, value, runtime, document, c):
             current = {'present': key in env, 'value': env.get(key)}
             if current not in [record['old'][key], {'present': True, 'value': new}]:
                 raise ValueError('foreign auth edit preserved; secure hold required')
-        after = splice(text, record['server'], document['new'], c)
+        # JSON adapters/journals may sort keys; use the same contract order
+        # as inventory() so the applied bytes match its planned checksum.
+        after = splice(text, record['server'], a.client_fields(value['token_file']), c)
         writes.append((path, after, c.sha(text)))
     for path, after, before in writes:
         if c.sha(after) != before:
