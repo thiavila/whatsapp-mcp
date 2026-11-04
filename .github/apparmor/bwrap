@@ -1,0 +1,8 @@
+# CI-only userns exception; production policy is independently verified.
+# https://documentation.ubuntu.com/release-notes/24.04/
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+}

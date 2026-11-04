@@ -1,0 +1,37 @@
+{
+  "kind": "macos-only-sdk-canary",
+  "platform": "macos-arm64",
+  "exit_code": 0,
+  "stdout": "{\"ok\": true, \"schema_sha256\": \"6eb08315f2c78aede998f0ab61433c404e14adb8be837c277c1f4c3a94904f64\", \"tools\": 57, \"versions\": {\"certifi\": \"2026.10.19\", \"pip\": \"26.2.2\", \"python\": \"3.11.18\", \"uv\": \"0.13.5\"}}\n",
+  "stderr": "",
+  "runtime": "/private/var/folders/9c/dzpvcw0j65dcx1r0r61_1jh40000gp/T/mcp-client-macos-36ldzn61/runtime",
+  "base_catalog": {
+    "ok": true,
+    "schema_sha256": "6eb08315f2c78aede998f0ab61433c404e14adb8be837c277c1f4c3a94904f64",
+    "tools": 57,
+    "versions": {
+      "certifi": "2026.10.19",
+      "pip": "26.2.2",
+      "python": "3.11.18",
+      "uv": "0.13.5"
+    }
+  },
+  "catalog_unchanged": true,
+  "production_entrypoint": {
+    "exit_code": 0,
+    "stdout": "{\"ok\": true, \"schema_sha256\": \"6eb08315f2c78aede998f0ab61433c404e14adb8be837c277c1f4c3a94904f64\", \"tools\": 57, \"versions\": {\"certifi\": \"2026.10.19\", \"pip\": \"26.2.2\", \"python\": \"3.11.18\", \"uv\": \"0.13.5\"}}\n",
+    "stderr": ""
+  },
+  "production_entrypoint_final": {
+    "exit_code": 0,
+    "stdout": "{\"explicit_env_preserved\": true, \"ok\": true, \"schema_sha256\": \"6eb08315f2c78aede998f0ab61433c404e14adb8be837c277c1f4c3a94904f64\", \"tools\": 57, \"versions\": {\"certifi\": \"2026.10.19\", \"pip\": \"26.2.2\", \"python\": \"3.11.18\", \"uv\": \"0.13.5\"}}\n",
+    "stderr": ""
+  },
+  "final_source": {
+    "code_sha256": "d6718ca4da87b45ce2db5083da2fbbb257741482c70de77ac57d851e35510439",
+    "exit_code": 0,
+    "stdout": "{\"explicit_env_preserved\": true, \"ok\": true, \"schema_sha256\": \"6eb08315f2c78aede998f0ab61433c404e14adb8be837c277c1f4c3a94904f64\", \"tools\": 57, \"versions\": {\"certifi\": \"2026.10.19\", \"pip\": \"26.2.2\", \"python\": \"3.11.18\", \"uv\": \"0.13.5\"}}\n",
+    "stderr": "",
+    "uv_no_env_file_suppression_separately_verified": true
+  }
+}

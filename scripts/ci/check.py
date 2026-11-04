@@ -37,13 +37,14 @@ def main():
         # go test includes compilation/vet: no separate duplicate go build/vet.
         run(['go', 'test', '-timeout=90s', '-count=1', '-parallel=2', './...'], bridge, 240)
         server = ROOT / 'whatsapp-mcp-server'
-        run(['uv', 'sync', '--frozen', '--no-dev', '--python', sys.executable], server)
+        run(['uv', 'sync', '--frozen', '--no-dev', '--group', 'bootstrap', '--python', sys.executable], server)
         python = str(work / 'venv/bin/python')
         run([python, '-m', 'compileall', '-q', *[str(p) for p in server.glob('*.py')]])
         run([python, '-m', 'unittest', 'discover', '-s', str(server / 'tests')], server)
         # Deployment control is stdlib-only; synthetic transition tests.
         if (ROOT / 'tests/maintenance').exists():
             run([python, '-m', 'unittest', 'discover', '-s', 'tests/maintenance'])
+        run([python, '-m', 'unittest', 'discover', '-s', 'tests/client'])
     print('Code CI passed; no service started.', flush=True)
 
 

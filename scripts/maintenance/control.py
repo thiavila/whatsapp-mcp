@@ -12,11 +12,11 @@ def require_sha(value):
     return value
 
 
-def admit_run(run, workflow_id, expected_sha):
+def admit_run(run, workflow_id, expected_sha, *, workflow=WORKFLOW):
     require_sha(expected_sha)
     if (run.get('repository', {}).get('full_name') != REPOSITORY
             or run.get('head_repository', {}).get('full_name') != REPOSITORY
-            or run.get('workflow_id') != workflow_id or run.get('path') != WORKFLOW
+            or run.get('workflow_id') != workflow_id or run.get('path') != workflow
             or run.get('head_branch') != 'main' or run.get('head_sha') != expected_sha
             or run.get('event') not in ['push', 'workflow_dispatch']
             or run.get('status') != 'completed' or run.get('conclusion') != 'success'):

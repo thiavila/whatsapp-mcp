@@ -10,7 +10,9 @@ import audio
 import random
 import time
 
-BRIDGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge')
+BRIDGE_DIR = os.environ.get("WHATSAPP_BRIDGE_DIR") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge'
+)
 
 
 def load_bridge_settings(env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
