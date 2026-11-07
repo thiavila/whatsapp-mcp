@@ -1,5 +1,6 @@
 from contextlib import closing
 import datetime as dt
+import json
 import sqlite3
 import tempfile
 import zipfile
@@ -73,6 +74,30 @@ class HermesControlTests(unittest.TestCase):
                 with self.assertRaises(ValueError):hermes_executor.poll()
                 hermes_executor.poll()
                 self.assertEqual(apply.call_count,1)
+
+    def test_rollback_block_is_rearmed_only_by_new_control_code(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary)
+            run=dict(id=1,status='completed',conclusion='success',path=hermes_executor.WORKFLOW,
+                     workflow_id=7,repository={'full_name':'thiavila/whatsapp-mcp'},
+                     head_repository={'full_name':'thiavila/whatsapp-mcp'},head_branch='main',event='workflow_dispatch')
+            request={'candidate_sha':'a'*40}
+            def api(path):
+                if '/workflows/' in path and '/runs?' not in path:return {'id':7}
+                if '/runs?' in path:return {'workflow_runs':[run]}
+                return run
+            module_path=Path(__file__).resolve().parents[2]/'scripts/maintenance/hermes_executor.py'
+            current=hermes_executor.common.digest(module_path)
+            (base/'blocked.json').write_text(json.dumps({
+                'candidate_sha':'a'*40,'control_sha256':current}))
+            with patch.object(hermes_executor,'BASE',base),patch.object(hermes_executor,'recover'),patch.object(hermes_executor.common,'api',side_effect=api),patch.object(hermes_executor,'request_artifact',return_value=request),patch.object(hermes_executor,'apply',return_value=True) as apply:
+                hermes_executor.poll()
+                apply.assert_not_called()
+                (base/'blocked.json').write_text(json.dumps({
+                    'candidate_sha':'a'*40,'control_sha256':'b'*64}))
+                hermes_executor.poll()
+                apply.assert_called_once_with(request,1)
+                self.assertEqual(json.loads((base/'last-run.json').read_text()),{'run_id':1})
 
     def test_canary_never_migrates_archived_or_nested_session_backups(self):
         home=hermes_executor.HOME

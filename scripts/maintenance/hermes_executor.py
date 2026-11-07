@@ -194,7 +194,14 @@ def recover():
     command(['systemctl','--user','daemon-reload'])
     resume(tx['units']);healthy(tx['units'],tx['previous_sha'])
     common.atomic(BASE/'last-rollback.json',tx);journal.unlink()
-    common.atomic(BASE/'blocked.json',{'candidate_sha':tx['candidate_sha']})
+    # A rollback blocks this exact candidate under the control code that
+    # observed the failure.  A reviewed control release may intentionally
+    # retry it after fixing (or proving transient) the gate; unchanged code
+    # still suppresses every timer poll.
+    common.atomic(BASE/'blocked.json',{
+        'candidate_sha':tx['candidate_sha'],
+        'control_sha256':common.digest(Path(__file__)),
+    })
     common.notify('hermes-rollback-'+tx['candidate_sha'],'Hermes: atualização revertida para a instalação anterior. Preservei sessões, filas, configuração e autenticação atuais; candidato bloqueado até correção.')
 
 
@@ -290,7 +297,10 @@ def poll():
         if previous.get('run_id')==run['id'] and previous.get('control_sha256')==control_hash:return
     request=request_artifact(run)
     blocked=BASE/'blocked.json'
-    if blocked.exists() and json_file(blocked).get('candidate_sha')==request['candidate_sha']:return
+    if blocked.exists():
+        block=json_file(blocked)
+        if (block.get('candidate_sha')==request['candidate_sha']
+                and block.get('control_sha256')==control_hash):return
     try:
         completed=apply(request,run['id'])
     except Exception as error:
