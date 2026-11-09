@@ -1,0 +1,36 @@
+{
+  "canary_blocker": "profiles/melancia-lismeri/cron/executions.db requires migration",
+  "candidate_sha": "8352c5764c6bbef2ad39d99df533da91c74bf953",
+  "checked_at": 1794242690.1359997,
+  "controller_sha": "0277d2a82b626d3b653567df556180f10f305fbf",
+  "disk_free_bytes": 1000374272,
+  "full_canary": "blocked-before-service-operations",
+  "go_ci_caches_cleaned": true,
+  "original_journal_and_backup_preserved": true,
+  "original_request_receipt_verified": true,
+  "original_run_id": 42478485171,
+  "repeated_intervention_no_stop_operations": true,
+  "schema_acceptance_not_performed": true,
+  "sqlite_integrity_snapshot_db_count": 113,
+  "telegram": {
+    "indexa-roberto:telegram": "connected",
+    "melancia-lismeri:telegram": "connected",
+    "melancia-manager:telegram": "connected",
+    "melancia-roberto:telegram": "connected",
+    "memo-vic:telegram": "connected",
+    "revella-carol:telegram": "connected",
+    "telegram": "connected"
+  },
+  "temporary_ram_snapshots_removed": true,
+  "units": {
+    "deploy-indexa-watch.timer": true,
+    "hermes-dashboard.service": true,
+    "hermes-gateway.service": true,
+    "hermes-health-watch.timer": true,
+    "mcp-maintenance-deploy.timer": false,
+    "melancia-roberto-watch.timer": true,
+    "sentry-indexa-watch.timer": true,
+    "wa-indexa-watch.timer": true
+  },
+  "watchdog_health": "ok"
+}

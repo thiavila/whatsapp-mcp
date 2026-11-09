@@ -2,9 +2,9 @@
 status: incomplete
 quick_id: 261109-ecg
 code_status: reviewed-go
-production_status: bootstrap-authorization-pending
+production_status: installed-updates-fenced
 ---
-# Hermes recovered; updater correction ready for controlled installation
+# Hermes recovered; controller installed; updates deliberately fenced
 
 ## Delivered
 
@@ -25,3 +25,7 @@ Publish reviewed PR via scripts/ci/local-ci.sh and check official GitHub code-CI
 After authorization, install a complete immutable reviewed merged controller generation using the existing installer from a separate clean infrastructure checkout, preserving the paused deploy timer and enabling independent health monitoring. Reconcile the legacy journal using the runbook's validated acceptance/archive checklist. Never restore historic data/auth, silently delete the journal, or re-enable the old controller. Leave deployments paused until baseline/canary/consumer checks pass.
 
 Separate debt: bridge/client-only stop-first recovery paths outside a Hermes intervention remain unchanged; no such pending transaction was found. Watchdog uses existing CLI/Telegram delivery and does not prove model/tool conversational health. VM disk remains 97% full; snapshot disk reserves apply.
+
+## Authorized installation follow-up
+
+PR21 merged and controller 0277d2a installed after explicit user approval. See DEPLOYMENT.md/DEPLOYMENT.json. Independent health monitor and original consumers are active; seven bots connected. Full 113-store canary correctly rejected a pending Lismeri cron migration before touching services. Updates stay paused for that migration and insufficient disk reserve; no schema acceptance or data/auth restore was performed.
