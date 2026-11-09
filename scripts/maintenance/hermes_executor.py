@@ -148,17 +148,32 @@ def active_session_copies(copies,schemas):
 
 
 def canary(root,copies,schemas,log):
-    # Initializers run only against copied state.db files with a private HOME.
+    # Exercise the known gateway stores, including shared state and cron ledgers.
+    # New upstream store APIs fail closed here, BEFORE stopping live consumers.
     paths=active_session_copies(copies,schemas)
     with tempfile.TemporaryDirectory(prefix='hermes-home-') as home:
-        code='import json,sys; from pathlib import Path; from hermes_state import SessionDB; '+\
-             '[SessionDB(Path(p)).close() for p in json.loads(sys.argv[1])]'
-        command(['bash',str(root/'scripts/run-in-hermes-env'),'env','HOME='+home,'HERMES_HOME='+home,
-                 'python3','-c',code,json.dumps(paths)],root,timeout=180,log=log)
+        code=('import os; from pathlib import Path; from hermes_state import SessionDB; '
+              'from cron import executions, incidents, notepad; '
+              'from gateway import hosted_rooms; '
+              'p=Path(os.environ["HERMES_HOME"]); '
+              'SessionDB(p/"state.db").close(); '
+              '[(m._connect().close()) for m,n in [(executions,"executions"),(incidents,"executions"),(notepad,"notepad")] if (p/"cron"/(n+".db")).exists()]; '
+              'shared=Path(os.environ["CANARY_SHARED_DB"]); '
+              'hosted_rooms._connect(shared).close() if shared.exists() else None')
+        for path in paths:
+            command(['bash',str(root/'scripts/run-in-hermes-env'),'env','HOME='+home,
+                     'HERMES_HOME='+str(Path(path).parent),
+                     'CANARY_SHARED_DB='+str(copies/'shared-state.db'),
+                     'python3','-c',code],root,timeout=180,log=log)
+        copied={str(HOME/p.relative_to(copies)):common.db_schema(p)
+                for p in copies.rglob('*.db') if p.is_file()}
+        if set(copied)!=set(schemas):
+            raise ValueError('Hermes store inventory migration: automatic promotion blocked')
         for path in schemas:
-            if common.db_schema(copies/Path(path).relative_to(HOME))!=schemas[path]:
+            if copied[path]!=schemas[path]:
                 raise ValueError('Hermes schema migration: automatic promotion blocked for '+str(Path(path).relative_to(HOME)))
-        command([str(root/'.hermes/bin/hermes'),'--help'],root,timeout=60,log=log)
+        command(['env','HOME='+home,'HERMES_HOME='+home,
+                 str(root/'.hermes/bin/hermes'),'--help'],root,timeout=60,log=log)
 
 
 def resume(states):
@@ -178,21 +193,124 @@ def healthy(states,sha):
     raise ValueError('Hermes candidate did not resume healthy')
 
 
+def intervention(tx,reason):
+    # Persist BEFORE notification: a delivery failure must never re-arm stops.
+    common.atomic(BASE/'intervention.json',{
+        'candidate_sha':tx['candidate_sha'],'run_id':tx['run_id'],'reason':reason})
+    try:
+        common.notify('hermes-intervention-'+tx['candidate_sha'],
+            'Hermes: recuperação automática bloqueada. Dados e versão instalada preservados; '
+            'nenhuma nova tentativa de parar serviços será feita. O gateway pode estar parado '
+            'se a falha ocorreu durante a troca/retomada; confira o monitor de saúde. Atualizações suspensas; '
+            'é necessária intervenção para conferir a saúde do gateway e os bancos atuais.')
+    except (OSError,subprocess.SubprocessError,ValueError):
+        # Subsequent polls retry delivery, but never repeat service operations.
+        pass
+    return False
+
+
+def installation():
+    return {str(p):common.digest(p) for p in
+            [SHIM,UNITS/'hermes-gateway.service',UNITS/'hermes-dashboard.service'] if p.is_file()}
+
+
+def config_fingerprints():
+    return {str(p):common.digest(p) for p in state_files() if p.name!='auth.json'}
+
+
+def other_transactions():
+    return any((common.BASE/name).exists() for name in
+               ['pending.json','client-pending.json','indexa-auth-pending.json'])
+
+
+def candidate_healthy(tx):
+    # Only new, receipt-bound journals permit automatic completion/resumption.
+    # Legacy journals cannot prove which installation is still on disk.
+    try:
+        if not tx.get('installed') or installation()!=tx['installed']:return False
+        validate_local(tx['request'])
+        if config_fingerprints()!=tx['config_hashes']:return False
+        current=json_file(HOME/'gateway_state.json')
+        pid=int(command(['systemctl','--user','show','hermes-gateway.service','-p','MainPID','--value']))
+        age=time.time()-dt.datetime.fromisoformat(current['updated_at']).timestamp()
+        telegram=[v for k,v in current.get('platforms',{}).items()
+                  if k=='telegram' or k.endswith(':telegram')]
+        return (active('hermes-gateway.service') and pid>1 and current.get('pid')==pid
+                and -30<=age<=180 and current.get('gateway_state')=='running'
+                and current.get('code_sha')==tx['candidate_sha'] and telegram
+                and all(v.get('state')=='connected' for v in telegram)
+                and (not tx['units'].get('hermes-dashboard.service') or active('hermes-dashboard.service')))
+    except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError):return False
+
+
+def recovery_barrier():
+    """Resolve/fence Hermes BEFORE any other lane can stop the gateway."""
+    pending=BASE/'pending.json'
+    if (BASE/'intervention.json').exists():
+        return recover() if pending.exists() else False
+    if not pending.exists():return True
+    # Concurrent journals are an operator decision, never an ordering guess.
+    if other_transactions():
+        return intervention(json_file(pending),'concurrent-transactions')
+    return recover()
+
+
 def recover():
     journal=BASE/'pending.json'
-    if not journal.exists():return
+    if not journal.exists():return True
     tx=json_file(journal)
-    for unit in CONSUMERS:ctl('stop',unit)
-    if live_schemas()!=tx['schemas']:
-        common.notify('hermes-unsafe-rollback-'+tx['candidate_sha'],'Hermes: rollback automático bloqueado por mudança no esquema de dados. Preservei o estado atual e parei os consumidores para evitar corrupção. Preciso de intervenção; nenhum token/banco antigo foi restaurado.')
-        raise ValueError('Hermes rollback requires compatible current schemas')
+    marker=BASE/'intervention.json'
+    if marker.exists():
+        return intervention(tx,json_file(marker)['reason'])
+    if tx.get('rollback_attempted'):
+        return intervention(tx,'rollback-incomplete')
+    # Schema compatibility must be established BEFORE any stop, including when
+    # reconciling legacy journals written by the old controller.
+    try: compatible=live_schemas()==tx['schemas']
+    except (OSError,sqlite3.Error,ValueError):
+        return intervention(tx,'schema-unreadable')
+    if not compatible:return intervention(tx,'schema-incompatible')
+    if candidate_healthy(tx):
+        try:resume(tx['units'])
+        except (OSError,subprocess.SubprocessError,ValueError):
+            return intervention(tx,'candidate-consumer-resume-failed')
+        common.atomic(BASE/'last-success.json',tx)
+        journal.unlink()
+        return True
+    # Arm durably before the first stop. A crash/failed restart cannot repeat it.
+    installed_before=installation()
+    tx['rollback_attempted']=True
+    common.atomic(journal,tx)
+    try:
+        for unit in CONSUMERS:ctl('stop',unit)
+    except (OSError,subprocess.SubprocessError,ValueError):
+        return intervention(tx,'rollback-stop-incomplete')
+    # Close the check/stop race; never restore old code over newly migrated data.
+    try: compatible=live_schemas()==tx['schemas']
+    except (OSError,sqlite3.Error,ValueError):
+        return intervention(tx,'schema-unreadable-after-stop')
+    if not compatible:
+        # No old files were restored. Restart only a receipt-bound unchanged
+        # candidate installation; legacy or foreign files require an operator.
+        try:
+            if (tx.get('installed')==installed_before==installation()
+                    and config_fingerprints()==tx['config_hashes']):
+                validate_local(tx['request'])
+                resume(tx['units'])
+                healthy(tx['units'],tx['candidate_sha'])
+        except (OSError,subprocess.SubprocessError,ValueError,KeyError):
+            return intervention(tx,'schema-changed-candidate-resume-failed')
+        return intervention(tx,'schema-changed-during-stop')
     backup=Path(tx['backup'])
-    for name in ['hermes-gateway.service','hermes-dashboard.service']:
-        path=UNITS/name
-        if (backup/name).exists():shutil.copyfile(backup/name,path)
-    shutil.copyfile(backup/'hermes-shim',SHIM);SHIM.chmod(0o755)
-    command(['systemctl','--user','daemon-reload'])
-    resume(tx['units']);healthy(tx['units'],tx['previous_sha'])
+    try:
+        for name in ['hermes-gateway.service','hermes-dashboard.service']:
+            path=UNITS/name
+            if (backup/name).exists():shutil.copyfile(backup/name,path)
+        shutil.copyfile(backup/'hermes-shim',SHIM);SHIM.chmod(0o755)
+        command(['systemctl','--user','daemon-reload'])
+        resume(tx['units']);healthy(tx['units'],tx['previous_sha'])
+    except (OSError,subprocess.SubprocessError,ValueError):
+        return intervention(tx,'rollback-unhealthy')
     common.atomic(BASE/'last-rollback.json',tx);journal.unlink()
     # A rollback blocks this exact candidate under the control code that
     # observed the failure.  A reviewed control release may intentionally
@@ -202,10 +320,14 @@ def recover():
         'candidate_sha':tx['candidate_sha'],
         'control_sha256':common.digest(Path(__file__)),
     })
-    common.notify('hermes-rollback-'+tx['candidate_sha'],'Hermes: atualização revertida para a instalação anterior. Preservei sessões, filas, configuração e autenticação atuais; candidato bloqueado até correção.')
+    try:
+        common.notify('hermes-rollback-'+tx['candidate_sha'],'Hermes: atualização revertida para a instalação anterior. Preservei sessões, filas, configuração e autenticação atuais; candidato bloqueado até correção.')
+    except (OSError,subprocess.SubprocessError,ValueError):pass
+    return True
 
 
 def apply(request,run_id):
+    if other_transactions():return False
     root=validate_local(request)
     state=json_file(HOME/'gateway_state.json')
     if request['action']=='promote' and not common.gateway_quiet():
@@ -236,8 +358,11 @@ def apply(request,run_id):
         if (UNITS/name).is_file():shutil.copyfile(UNITS/name,backup/name)
     shutil.copyfile(SHIM,backup/'hermes-shim')
     units={u:active(u) for u in CONSUMERS}
+    if other_transactions():return False
     tx={'candidate_sha':request['candidate_sha'],'previous_sha':require_sha(state['code_sha']),
-        'backup':str(backup),'units':units,'schemas':schemas,'run_id':run_id}
+        'backup':str(backup),'units':units,'schemas':schemas,'run_id':run_id,
+        'request':request,'config_hashes':config_hashes,'phase':'stopping','started_at':time.time(),
+        'maintenance_deadline':time.time()+2220}
     common.atomic(BASE/'pending.json',tx)
     try:
         for unit in common.WATCH_TIMERS:ctl('stop',unit)
@@ -252,6 +377,7 @@ def apply(request,run_id):
         tx['schemas']=snapshot_archive(backup/'sqlite-backup.zip')
         tx['sqlite_archive_sha256']=common.digest(backup/'sqlite-backup.zip')
         common.atomic(BASE/'pending.json',tx)
+        tx['phase']='installing';common.atomic(BASE/'pending.json',tx)
         # Snapshot configs privately; never replay auth.json in recovery.
         for path in state_files():
             target=backup/'config'/path.relative_to(HOME);target.parent.mkdir(parents=True,exist_ok=True)
@@ -264,6 +390,7 @@ def apply(request,run_id):
             command(['bash',str(root/'scripts/install.sh'),'--dir',str(root),'--stage',stage,
                      '--non-interactive','--branch',branch,'--commit',request['candidate_sha']],root,timeout=900,log=destination/'installer.log')
         command([str(root/'.hermes/bin/hermes'),'gateway','install','--force','--no-start-now','--start-on-login'],root,timeout=120,log=destination/'gateway-install.log')
+        tx['installed']=installation();tx['phase']='starting';common.atomic(BASE/'pending.json',tx)
         if any(common.digest(Path(p))!=sha for p,sha in config_hashes.items()):
             raise ValueError('material config migration requires explicit decision')
         command(['systemctl','--user','daemon-reload']);resume(units);healthy(units,request['candidate_sha'])
@@ -276,7 +403,10 @@ def apply(request,run_id):
 
 
 def poll():
-    BASE.mkdir(mode=0o700,parents=True,exist_ok=True);recover()
+    BASE.mkdir(mode=0o700,parents=True,exist_ok=True)
+    if (BASE/'intervention.json').exists() and not (BASE/'pending.json').exists():
+        return False  # Orphan marker still fences all lanes until operator review.
+    if recover() is False:return False
     try: workflow=common.api(f'repos/{REPOSITORY}/actions/workflows/hermes-maintenance.yml')
     except subprocess.CalledProcessError:return  # Initial bootstrap before workflow merge.
     runs=common.api(f'repos/{REPOSITORY}/actions/workflows/{workflow["id"]}/runs?branch=main&per_page=1')['workflow_runs']
