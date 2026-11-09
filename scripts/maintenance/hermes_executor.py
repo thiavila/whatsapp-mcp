@@ -148,15 +148,28 @@ def active_session_copies(copies,schemas):
 
 
 def canary(root,copies,schemas,log):
-    # Initializers run only against copied state.db files with a private HOME.
+    # Exercise the known gateway stores, including shared state and cron ledgers.
+    # New upstream store APIs fail closed here, BEFORE stopping live consumers.
     paths=active_session_copies(copies,schemas)
     with tempfile.TemporaryDirectory(prefix='hermes-home-') as home:
-        code='import json,sys; from pathlib import Path; from hermes_state import SessionDB; '+\
-             '[SessionDB(Path(p)).close() for p in json.loads(sys.argv[1])]'
-        command(['bash',str(root/'scripts/run-in-hermes-env'),'env','HOME='+home,'HERMES_HOME='+home,
-                 'python3','-c',code,json.dumps(paths)],root,timeout=180,log=log)
+        code=('import os; from pathlib import Path; from hermes_state import SessionDB; '
+              'from cron import executions, incidents, notepad; '
+              'from gateway import hosted_rooms; '
+              'p=Path(os.environ["HERMES_HOME"]); '
+              'SessionDB(p/"state.db").close(); '
+              'executions._connect().close(); incidents._connect().close(); notepad._connect().close(); '
+              'hosted_rooms._connect(Path(os.environ["CANARY_SHARED_DB"])).close()')
+        for path in paths:
+            command(['bash',str(root/'scripts/run-in-hermes-env'),'env','HOME='+home,
+                     'HERMES_HOME='+str(Path(path).parent),
+                     'CANARY_SHARED_DB='+str(copies/'shared-state.db'),
+                     'python3','-c',code],root,timeout=180,log=log)
+        copied={str(HOME/p.relative_to(copies)):common.db_schema(p)
+                for p in copies.rglob('*.db') if p.is_file()}
+        if set(copied)!=set(schemas):
+            raise ValueError('Hermes store inventory migration: automatic promotion blocked')
         for path in schemas:
-            if common.db_schema(copies/Path(path).relative_to(HOME))!=schemas[path]:
+            if copied[path]!=schemas[path]:
                 raise ValueError('Hermes schema migration: automatic promotion blocked for '+str(Path(path).relative_to(HOME)))
         command([str(root/'.hermes/bin/hermes'),'--help'],root,timeout=60,log=log)
 
@@ -178,14 +191,40 @@ def healthy(states,sha):
     raise ValueError('Hermes candidate did not resume healthy')
 
 
+def intervention(tx,reason):
+    # Persist BEFORE notification: a delivery failure must never re-arm stops.
+    common.atomic(BASE/'intervention.json',{
+        'candidate_sha':tx['candidate_sha'],'run_id':tx['run_id'],'reason':reason})
+    try:
+        common.notify('hermes-intervention-'+tx['candidate_sha'],
+            'Hermes: recuperação automática bloqueada. Dados e versão instalada preservados; '
+            'nenhuma nova tentativa de parar serviços será feita. Atualizações suspensas; '
+            'é necessária intervenção para conferir a saúde do gateway e os bancos atuais.')
+    except (OSError,subprocess.SubprocessError,ValueError):
+        # Subsequent polls retry delivery, but never repeat service operations.
+        pass
+    return False
+
+
 def recover():
     journal=BASE/'pending.json'
-    if not journal.exists():return
+    if not journal.exists():return True
     tx=json_file(journal)
+    marker=BASE/'intervention.json'
+    if marker.exists():
+        return intervention(tx,json_file(marker)['reason'])
+    # Schema compatibility must be established BEFORE any stop, including when
+    # reconciling legacy journals written by the old controller.
+    try: compatible=live_schemas()==tx['schemas']
+    except (OSError,sqlite3.Error,ValueError):
+        return intervention(tx,'schema-unreadable')
+    if not compatible:return intervention(tx,'schema-incompatible')
     for unit in CONSUMERS:ctl('stop',unit)
-    if live_schemas()!=tx['schemas']:
-        common.notify('hermes-unsafe-rollback-'+tx['candidate_sha'],'Hermes: rollback automático bloqueado por mudança no esquema de dados. Preservei o estado atual e parei os consumidores para evitar corrupção. Preciso de intervenção; nenhum token/banco antigo foi restaurado.')
-        raise ValueError('Hermes rollback requires compatible current schemas')
+    # Close the check/stop race; never restore old code over newly migrated data.
+    try: compatible=live_schemas()==tx['schemas']
+    except (OSError,sqlite3.Error,ValueError):
+        return intervention(tx,'schema-unreadable-after-stop')
+    if not compatible:return intervention(tx,'schema-changed-during-stop')
     backup=Path(tx['backup'])
     for name in ['hermes-gateway.service','hermes-dashboard.service']:
         path=UNITS/name
@@ -203,6 +242,7 @@ def recover():
         'control_sha256':common.digest(Path(__file__)),
     })
     common.notify('hermes-rollback-'+tx['candidate_sha'],'Hermes: atualização revertida para a instalação anterior. Preservei sessões, filas, configuração e autenticação atuais; candidato bloqueado até correção.')
+    return True
 
 
 def apply(request,run_id):
@@ -276,7 +316,10 @@ def apply(request,run_id):
 
 
 def poll():
-    BASE.mkdir(mode=0o700,parents=True,exist_ok=True);recover()
+    BASE.mkdir(mode=0o700,parents=True,exist_ok=True)
+    if (BASE/'intervention.json').exists() and not (BASE/'pending.json').exists():
+        return False  # Orphan marker still fences all lanes until operator review.
+    if recover() is False:return False
     try: workflow=common.api(f'repos/{REPOSITORY}/actions/workflows/hermes-maintenance.yml')
     except subprocess.CalledProcessError:return  # Initial bootstrap before workflow merge.
     runs=common.api(f'repos/{REPOSITORY}/actions/workflows/{workflow["id"]}/runs?branch=main&per_page=1')['workflow_runs']

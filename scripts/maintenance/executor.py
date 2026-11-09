@@ -99,6 +99,14 @@ def gateway_quiet():
 
 
 def notify(key, message):
+    # The independent watchdog and deploy poll may notify concurrently.
+    # Keep deduplication durable across both processes, including slow delivery.
+    with (BASE/'notifications.lock').open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        _notify_locked(key,message)
+
+
+def _notify_locked(key, message):
     path = BASE / 'notifications.json'
     previous = json.loads(path.read_text()) if path.exists() else {}
     if key in previous: return
@@ -369,7 +377,8 @@ def poll():
             return
         recover()
         import hermes_executor
-        hermes_executor.poll()
+        if hermes_executor.poll() is False:
+            return  # An unresolved Hermes transaction fences other restart lanes.
         # Same external lock; client-only publication never stops the bridges.
         import client_executor
         client_executor.poll_safely()
