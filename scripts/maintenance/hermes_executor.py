@@ -214,14 +214,22 @@ def installation():
             [SHIM,UNITS/'hermes-gateway.service',UNITS/'hermes-dashboard.service'] if p.is_file()}
 
 
+def config_fingerprints():
+    return {str(p):common.digest(p) for p in state_files() if p.name!='auth.json'}
+
+
+def other_transactions():
+    return any((common.BASE/name).exists() for name in
+               ['pending.json','client-pending.json','indexa-auth-pending.json'])
+
+
 def candidate_healthy(tx):
     # Only new, receipt-bound journals permit automatic completion/resumption.
     # Legacy journals cannot prove which installation is still on disk.
     try:
         if not tx.get('installed') or installation()!=tx['installed']:return False
         validate_local(tx['request'])
-        current_configs={str(p):common.digest(p) for p in state_files() if p.name!='auth.json'}
-        if current_configs!=tx['config_hashes']:return False
+        if config_fingerprints()!=tx['config_hashes']:return False
         current=json_file(HOME/'gateway_state.json')
         pid=int(command(['systemctl','--user','show','hermes-gateway.service','-p','MainPID','--value']))
         age=time.time()-dt.datetime.fromisoformat(current['updated_at']).timestamp()
@@ -238,11 +246,11 @@ def candidate_healthy(tx):
 def recovery_barrier():
     """Resolve/fence Hermes BEFORE any other lane can stop the gateway."""
     pending=BASE/'pending.json'
-    if (BASE/'intervention.json').exists() and not pending.exists():return False
+    if (BASE/'intervention.json').exists():
+        return recover() if pending.exists() else False
     if not pending.exists():return True
     # Concurrent journals are an operator decision, never an ordering guess.
-    if any((common.BASE/name).exists() for name in
-           ['pending.json','client-pending.json','indexa-auth-pending.json']):
+    if other_transactions():
         return intervention(json_file(pending),'concurrent-transactions')
     return recover()
 
@@ -263,6 +271,9 @@ def recover():
         return intervention(tx,'schema-unreadable')
     if not compatible:return intervention(tx,'schema-incompatible')
     if candidate_healthy(tx):
+        try:resume(tx['units'])
+        except (OSError,subprocess.SubprocessError,ValueError):
+            return intervention(tx,'candidate-consumer-resume-failed')
         common.atomic(BASE/'last-success.json',tx)
         journal.unlink()
         return True
@@ -282,7 +293,8 @@ def recover():
         # No old files were restored. Restart only a receipt-bound unchanged
         # candidate installation; legacy or foreign files require an operator.
         try:
-            if tx.get('installed')==installed_before==installation():
+            if (tx.get('installed')==installed_before==installation()
+                    and config_fingerprints()==tx['config_hashes']):
                 validate_local(tx['request'])
                 resume(tx['units'])
                 healthy(tx['units'],tx['candidate_sha'])
@@ -315,6 +327,7 @@ def recover():
 
 
 def apply(request,run_id):
+    if other_transactions():return False
     root=validate_local(request)
     state=json_file(HOME/'gateway_state.json')
     if request['action']=='promote' and not common.gateway_quiet():
@@ -345,6 +358,7 @@ def apply(request,run_id):
         if (UNITS/name).is_file():shutil.copyfile(UNITS/name,backup/name)
     shutil.copyfile(SHIM,backup/'hermes-shim')
     units={u:active(u) for u in CONSUMERS}
+    if other_transactions():return False
     tx={'candidate_sha':request['candidate_sha'],'previous_sha':require_sha(state['code_sha']),
         'backup':str(backup),'units':units,'schemas':schemas,'run_id':run_id,
         'request':request,'config_hashes':config_hashes,'phase':'stopping','started_at':time.time(),

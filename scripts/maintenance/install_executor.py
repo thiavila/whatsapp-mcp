@@ -60,10 +60,13 @@ def stage_control(base, source, sha):
     return code
 
 
-def activate_timers(deploy_active):
+def activate_timers(deploy_active,deploy_enabled):
     subprocess.run(['systemctl','--user','daemon-reload'],check=True)
-    subprocess.run(['systemctl','--user','enable',*(['--now'] if deploy_active else []),
-                    'mcp-maintenance-deploy.timer'],check=True)
+    if deploy_enabled:
+        subprocess.run(['systemctl','--user','enable',*(['--now'] if deploy_active else []),
+                        'mcp-maintenance-deploy.timer'],check=True)
+    elif deploy_active:
+        subprocess.run(['systemctl','--user','start','mcp-maintenance-deploy.timer'],check=True)
     subprocess.run(['systemctl','--user','enable','--now','hermes-health-watch.timer'],check=True)
 
 
@@ -86,6 +89,8 @@ def main(expected_sha):
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     deploy_active=subprocess.run(['systemctl','--user','is-active','--quiet',
                                   'mcp-maintenance-deploy.timer'],check=False).returncode==0
+    deploy_enabled=subprocess.run(['systemctl','--user','is-enabled','--quiet',
+                                   'mcp-maintenance-deploy.timer'],check=False).returncode==0
     code=stage_control(BASE,ROOT/'scripts/maintenance',sha)
     units=Path.home()/'.config/systemd/user';units.mkdir(parents=True,exist_ok=True)
     service=f'''[Unit]
@@ -138,7 +143,7 @@ OnUnitActiveSec=2min
 WantedBy=timers.target
 ''')
     # Preserve an operator's paused deployment timer; watchdog still starts.
-    activate_timers(deploy_active)
+    activate_timers(deploy_active,deploy_enabled)
     print('MCP external executor installed; application deployment waits for an admissible release.')
 
 

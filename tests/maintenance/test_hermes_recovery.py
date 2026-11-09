@@ -105,8 +105,9 @@ class RecoveryTests(unittest.TestCase):
     def test_healthy_receipt_bound_candidate_finishes_without_rollback(self):
         with tempfile.TemporaryDirectory() as tmp:
             base=Path(tmp);db=base/'state.db';database(db);tx=self.transaction(base,db)
-            with patch.object(h,'BASE',base),patch.object(h,'live_schemas',return_value=tx['schemas']),patch.object(h,'candidate_healthy',return_value=True),patch.object(h,'ctl') as ctl:
+            with patch.object(h,'BASE',base),patch.object(h,'live_schemas',return_value=tx['schemas']),patch.object(h,'candidate_healthy',return_value=True),patch.object(h,'ctl') as ctl,patch.object(h,'resume') as resume:
                 self.assertTrue(h.recover());ctl.assert_not_called()
+                resume.assert_called_once_with(tx['units'])
             self.assertFalse((base/'pending.json').exists())
             self.assertEqual(json.loads((base/'last-success.json').read_text())['candidate_sha'],tx['candidate_sha'])
 
@@ -118,19 +119,57 @@ class RecoveryTests(unittest.TestCase):
     def test_changed_schema_after_stop_resumes_only_bound_unchanged_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
             base=Path(tmp);db=base/'state.db';database(db);tx=self.transaction(base,db)
-            tx.update(installed={'fixed launcher':'digest'},request={'candidate_sha':'a'*40})
+            tx.update(installed={'fixed launcher':'digest'},request={'candidate_sha':'a'*40},config_hashes={})
             e.atomic(base/'pending.json',tx)
-            with patch.object(h,'BASE',base),patch.object(h,'live_schemas',side_effect=[tx['schemas'],{}]),patch.object(h,'candidate_healthy',return_value=False),patch.object(h,'installation',return_value=tx['installed']),patch.object(h,'validate_local') as validate,patch.object(h,'ctl'),patch.object(h,'resume') as resume,patch.object(h,'healthy') as healthy,patch.object(h.shutil,'copyfile') as copy,patch.object(h.common,'notify'):
+            with patch.object(h,'BASE',base),patch.object(h,'live_schemas',side_effect=[tx['schemas'],{}]),patch.object(h,'candidate_healthy',return_value=False),patch.object(h,'installation',return_value=tx['installed']),patch.object(h,'config_fingerprints',return_value={}),patch.object(h,'validate_local') as validate,patch.object(h,'ctl'),patch.object(h,'resume') as resume,patch.object(h,'healthy') as healthy,patch.object(h.shutil,'copyfile') as copy,patch.object(h.common,'notify'):
                 self.assertFalse(h.recover());copy.assert_not_called()
                 validate.assert_called_once_with(tx['request'])
                 resume.assert_called_once_with(tx['units']);healthy.assert_called_once_with(tx['units'],tx['candidate_sha'])
 
+    def test_changed_config_after_stop_never_resumes_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);db=base/'state.db';database(db);tx=self.transaction(base,db)
+            tx.update(installed={'launcher':'digest'},request={},config_hashes={'config':'before'})
+            e.atomic(base/'pending.json',tx)
+            with patch.object(h,'BASE',base),patch.object(h,'live_schemas',side_effect=[tx['schemas'],{}]),patch.object(h,'candidate_healthy',return_value=False),patch.object(h,'installation',return_value=tx['installed']),patch.object(h,'config_fingerprints',return_value={'config':'after'}),patch.object(h,'validate_local'),patch.object(h,'ctl'),patch.object(h,'resume') as resume,patch.object(h.common,'notify'):
+                self.assertFalse(h.recover());resume.assert_not_called()
+
+    def test_candidate_health_requires_real_metadata_configs_and_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home=Path(tmp);now=h.time.time()
+            state=dict(pid=123,gateway_state='running',code_sha='a'*40,
+                       updated_at=h.dt.datetime.fromtimestamp(now,h.dt.timezone.utc).isoformat(),
+                       platforms={'telegram':{'state':'connected'},'profile:telegram':{'state':'connected'}})
+            tx=dict(candidate_sha='a'*40,installed={'launcher':'hash'},request={},config_hashes={},units={})
+            with patch.object(h,'HOME',home),patch.object(h,'installation',return_value=tx['installed']),patch.object(h,'validate_local') as validate,patch.object(h,'config_fingerprints',return_value={}),patch.object(h,'active',return_value=True),patch.object(h,'command',return_value='123'):
+                (home/'gateway_state.json').write_text(json.dumps(state))
+                self.assertTrue(h.candidate_healthy(tx));validate.assert_called_once_with(tx['request'])
+                state['pid']=999;(home/'gateway_state.json').write_text(json.dumps(state))
+                self.assertFalse(h.candidate_healthy(tx))
+                state['pid']=123;state['platforms']['profile:telegram']['state']='disconnected'
+                (home/'gateway_state.json').write_text(json.dumps(state))
+                self.assertFalse(h.candidate_healthy(tx))
+
+    def test_apply_does_not_enter_while_another_lane_has_pending_work(self):
+        with patch.object(h,'other_transactions',return_value=True),patch.object(h,'validate_local') as validate:
+            self.assertFalse(h.apply({},123));validate.assert_not_called()
+
+    def test_barrier_preserves_original_intervention_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);db=base/'state.db';database(db);tx=self.transaction(base,db)
+            e.atomic(base/'intervention.json',dict(reason='schema-incompatible'))
+            with patch.object(h,'BASE',base),patch.object(h,'other_transactions',return_value=True),patch.object(e,'notify'):
+                self.assertFalse(h.recovery_barrier())
+            self.assertEqual(json.loads((base/'intervention.json').read_text())['reason'],'schema-incompatible')
+
     def test_barrier_precedes_auth_and_bridge_recovery(self):
         with tempfile.TemporaryDirectory() as tmp:
-            base=Path(tmp);db=base/'state.db';database(db);self.transaction(base,db)
+            base=Path(tmp);hermes=base/'hermes';hermes.mkdir();mcp=base/'mcp';mcp.mkdir()
+            db=hermes/'state.db';database(db);self.transaction(hermes,db)
             import indexa_auth_executor as auth
-            with patch.object(e,'BASE',base),patch.object(h,'BASE',base),patch.object(h,'live_schemas',return_value={}),patch.object(h.common,'notify'),patch.object(auth,'poll_safely') as auth_poll,patch.object(e,'recover') as bridge_recover:
+            with patch.object(e,'BASE',mcp),patch.object(h,'BASE',hermes),patch.object(h,'live_schemas',return_value={}),patch.object(h.common,'notify'),patch.object(auth,'poll_safely') as auth_poll,patch.object(e,'recover') as bridge_recover:
                 e.poll();auth_poll.assert_not_called();bridge_recover.assert_not_called()
+                self.assertEqual(json.loads((hermes/'intervention.json').read_text())['reason'],'schema-incompatible')
 
     def test_concurrent_journals_require_intervention_before_any_lane(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -143,13 +182,16 @@ class RecoveryTests(unittest.TestCase):
     def test_installer_preserves_paused_timer_and_starts_independent_monitor(self):
         import install_executor as installer
         with patch.object(installer.subprocess,'run') as run:
-            installer.activate_timers(False)
+            installer.activate_timers(False,True)
             commands=[c.args[0] for c in run.call_args_list]
             self.assertIn(['systemctl','--user','enable','mcp-maintenance-deploy.timer'],commands)
             self.assertIn(['systemctl','--user','enable','--now','hermes-health-watch.timer'],commands)
         with patch.object(installer.subprocess,'run') as run:
-            installer.activate_timers(True)
+            installer.activate_timers(True,True)
             self.assertIn(['systemctl','--user','enable','--now','mcp-maintenance-deploy.timer'],[c.args[0] for c in run.call_args_list])
+        with patch.object(installer.subprocess,'run') as run:
+            installer.activate_timers(False,False)
+            self.assertFalse(any('mcp-maintenance-deploy.timer' in c.args[0] for c in run.call_args_list))
 
     def test_orphan_intervention_also_fences_all_deploy_lanes(self):
         with tempfile.TemporaryDirectory() as tmp:
