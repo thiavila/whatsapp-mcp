@@ -23,6 +23,10 @@ WORKFLOW='.github/workflows/hermes-maintenance.yml'
 CONSUMERS=[*common.WATCH_TIMERS,*common.WATCH_SERVICES,'hermes-dashboard.service','hermes-gateway.service']
 UNITS=Path('/home/thiago/.config/systemd/user')
 SHIM=Path('/home/thiago/.local/bin/hermes')
+HOSTED_ROOM_CAPACITY_SCHEMA=('table','hosted_room_policy_capacity','hosted_room_policy_capacity',
+    'CREATE TABLE hosted_room_policy_capacity (\n        singleton INTEGER PRIMARY KEY CHECK(singleton=1), max_active_events INTEGER NOT NULL)')
+OLD_EXECUTION_STATUSES="('claimed','running','completed','failed','unknown')"
+NEW_EXECUTION_STATUSES="('claimed','running','completed','failed','unknown','cancelled','missed')"
 
 
 def command(args,root=None,timeout=120,log=None):
@@ -147,6 +151,83 @@ def active_session_copies(copies,schemas):
             (Path(p).name=='state.db' and Path(p).parent.parent==HOME/'profiles')]
 
 
+def active_state_database(path):
+    path=Path(path)
+    return path==HOME/'state.db' or (path.name=='state.db' and path.parent.parent==HOME/'profiles')
+
+
+def active_execution_database(path):
+    path=Path(path)
+    return (path==HOME/'cron/executions.db' or
+            (path.name=='executions.db' and path.parent.name=='cron'
+             and path.parent.parent.parent==HOME/'profiles'))
+
+
+def schema_description(path):
+    with closing(sqlite3.connect(f'file:{path}?mode=ro',uri=True)) as connection:
+        if connection.execute('PRAGMA quick_check').fetchall()!=[('ok',)]:
+            raise ValueError('database integrity check failed')
+        rows=connection.execute("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name").fetchall()
+        version=connection.execute('PRAGMA user_version').fetchone()[0]
+        metadata=[]
+        for table in [r[1] for r in rows if r[0]=='table' and r[1].lower() in
+                      {'whatsmeow_version','schema_version','schema_migrations','alembic_version','db_version'}]:
+            quoted='"'+table.replace('"','""')+'"'
+            metadata.append((table,connection.execute(f'SELECT * FROM {quoted} LIMIT 1000').fetchall()))
+    return rows,version,metadata
+
+
+def expected_forward_description(path,before):
+    rows,version,metadata=before
+    if active_state_database(path):
+        if metadata!=[('schema_version',[(32,)])]:
+            raise ValueError('forward state schema_version is not exactly 32')
+        if any(row[1]=='hosted_room_policy_capacity' for row in rows):
+            raise ValueError('forward state schema already contained capacity table')
+        return sorted([*rows,HOSTED_ROOM_CAPACITY_SCHEMA],key=lambda row:(row[0],row[1])),version,metadata
+    if active_execution_database(path):
+        matches=[i for i,row in enumerate(rows) if row[:3]==('table','executions','executions')]
+        if len(matches)!=1:raise ValueError('forward executions table absent')
+        index=matches[0];sql=rows[index][3]
+        if not isinstance(sql,str) or sql.count(OLD_EXECUTION_STATUSES)!=1 or NEW_EXECUTION_STATUSES in sql:
+            raise ValueError('forward executions status constraint unexpected')
+        changed=list(rows);changed[index]=(*rows[index][:3],sql.replace(OLD_EXECUTION_STATUSES,NEW_EXECUTION_STATUSES))
+        return changed,version,metadata
+    raise ValueError('database is not eligible for forward reconciliation')
+
+
+def forward_schema_state(tx):
+    current=live_schemas()
+    if set(current)!=set(tx['schemas']):raise ValueError('forward database set changed')
+    selected=[Path(path) for path in current if active_state_database(path) or active_execution_database(path)]
+    if not selected or not any(active_state_database(p) for p in selected) or not any(active_execution_database(p) for p in selected):
+        raise ValueError('forward database selection incomplete')
+    for path,digest in current.items():
+        if Path(path) not in selected and digest!=tx['schemas'][path]:
+            raise ValueError('unapproved forward schema drift')
+    backup=Path(tx['backup'])
+    expected_backup=(BASE/'runs'/str(tx['run_id'])/'backup').resolve()
+    if backup.resolve()!=expected_backup:raise ValueError('forward backup path outside transaction')
+    archive=backup/'sqlite-backup.zip'
+    if common.digest(archive)!=tx.get('sqlite_archive_sha256'):raise ValueError('forward backup digest changed')
+    with tempfile.TemporaryDirectory(prefix='forward-schema-',dir=backup.parent) as folder,zipfile.ZipFile(archive) as saved:
+        if saved.testzip() is not None or len(saved.namelist())!=len(set(saved.namelist())):
+            raise ValueError('forward backup archive invalid')
+        members=set(saved.namelist())
+        for number,path in enumerate(selected):
+            member=str(path.relative_to(HOME))
+            if member not in members:raise ValueError('forward database missing from backup')
+            original=Path(folder)/f'{number}.db';original.write_bytes(saved.read(member))
+            before=schema_description(original);after=schema_description(path)
+            if active_state_database(path) and after[2]!=[('schema_version',[(32,)])]:
+                raise ValueError('forward state schema_version is not exactly 32')
+            if after!=expected_forward_description(path,before):
+                raise ValueError('unapproved forward schema delta: '+member)
+            if current[str(path)]==tx['schemas'][str(path)]:
+                raise ValueError('expected forward schema delta absent: '+member)
+    return current
+
+
 def canary(root,copies,schemas,log):
     # Initializers run only against copied state.db files with a private HOME.
     paths=active_session_copies(copies,schemas)
@@ -162,7 +243,7 @@ def canary(root,copies,schemas,log):
 
 
 def resume(states):
-    for unit in ['hermes-gateway.service','hermes-dashboard.service',*common.WATCH_TIMERS]:
+    for unit in ['hermes-gateway.service','hermes-dashboard.service',*common.WATCH_TIMERS,*common.WATCH_SERVICES]:
         if states.get(unit):ctl('start',unit)
 
 
@@ -178,14 +259,106 @@ def healthy(states,sha):
     raise ValueError('Hermes candidate did not resume healthy')
 
 
+def stop_consumers():
+    failures=[]
+    for unit in CONSUMERS:
+        try:ctl('stop',unit)
+        except Exception as error:failures.append((unit,error))
+    if failures:
+        raise ValueError('failed to stop Hermes consumers: '+','.join(unit for unit,_ in failures)) from failures[0][1]
+
+
+def durable_unlink(path):
+    path=Path(path);path.unlink()
+    descriptor=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
+    try:os.fsync(descriptor)
+    finally:os.close(descriptor)
+
+
+def live_forward_candidate(tx):
+    candidate=require_sha(tx['candidate_sha'])
+    if not tx.get('units',{}).get('hermes-gateway.service'):
+        raise ValueError('forward transaction did not originate with an active gateway')
+    state=json_file(HOME/'gateway_state.json')
+    if (not active('hermes-gateway.service') or state.get('gateway_state')!='running'
+            or state.get('code_sha')!=candidate
+            or state.get('platforms',{}).get('telegram',{}).get('state')!='connected'):
+        raise ValueError('forward candidate gateway is not live and connected')
+    return candidate
+
+
+def pending_request(tx):
+    candidate=require_sha(tx['candidate_sha']);run_id=int(tx['run_id'])
+    run=common.api(f'repos/{REPOSITORY}/actions/runs/{run_id}')
+    if (run.get('id')!=run_id or run.get('path')!=WORKFLOW
+            or run.get('repository',{}).get('full_name')!=REPOSITORY
+            or run.get('head_repository',{}).get('full_name')!=REPOSITORY
+            or run.get('head_branch')!='main' or run.get('event')!='workflow_dispatch'
+            or run.get('status')!='completed' or run.get('conclusion')!='success'):
+        raise ValueError('pending Hermes request provenance')
+    request=request_artifact(run)
+    if request['action']!='promote' or request['candidate_sha']!=candidate:
+        raise ValueError('pending Hermes request changed')
+    return request,validate_local(request)
+
+
+def install_candidate(request,root,destination):
+    branch=command(['git','-C',str(root),'branch','--show-current'])
+    if not branch:raise ValueError('candidate needs a named local branch')
+    if validate_local(request)!=root:raise ValueError('candidate root changed')
+    for stage in ['products','complete']:
+        command(['bash',str(root/'scripts/install.sh'),'--dir',str(root),'--stage',stage,
+                 '--non-interactive','--branch',branch,'--commit',request['candidate_sha']],
+                root,timeout=900,log=destination/'installer.log')
+    command([str(root/'.hermes/bin/hermes'),'gateway','install','--force','--no-start-now','--start-on-login'],
+            root,timeout=120,log=destination/'gateway-install.log')
+
+
+def reconcile_forward(tx,live_candidate):
+    request,root=pending_request(tx)
+    if request['candidate_sha']!=live_candidate:raise ValueError('forward candidate evidence changed')
+    expected=forward_schema_state(tx)
+    config_hashes={str(p):common.digest(p) for p in state_files() if p.name!='auth.json'}
+    destination=BASE/'runs'/str(tx['run_id'])
+    if live_schemas()!=expected:raise ValueError('forward schemas changed before reconciliation')
+    install_candidate(request,root,destination)
+    if any(common.digest(Path(path))!=digest for path,digest in config_hashes.items()):
+        raise ValueError('material config migration requires explicit decision')
+    try:
+        command(['systemctl','--user','daemon-reload']);resume(tx['units'])
+        healthy(tx['units'],request['candidate_sha'])
+        if live_schemas()!=expected:raise ValueError('forward schemas changed during reconciliation')
+    except BaseException:
+        try:stop_consumers()
+        except BaseException:pass
+        raise
+    result=dict(tx,result='forward_reconciled')
+    common.atomic(BASE/'last-success.json',result);durable_unlink(BASE/'pending.json')
+    try:
+        common.notify('hermes-forward-'+request['candidate_sha'],
+            'Hermes: instalação candidata reconciliada pelo instalador oficial; esquemas esperados e saúde conferidos, sem restaurar autenticação.')
+    except BaseException:pass
+
+
 def recover():
     journal=BASE/'pending.json'
     if not journal.exists():return
     tx=json_file(journal)
-    for unit in CONSUMERS:ctl('stop',unit)
     if live_schemas()!=tx['schemas']:
-        common.notify('hermes-unsafe-rollback-'+tx['candidate_sha'],'Hermes: rollback automático bloqueado por mudança no esquema de dados. Preservei o estado atual e parei os consumidores para evitar corrupção. Preciso de intervenção; nenhum token/banco antigo foi restaurado.')
-        raise ValueError('Hermes rollback requires compatible current schemas')
+        evidence=None;failure=None
+        try:evidence=live_forward_candidate(tx)
+        except BaseException as error:failure=error
+        try:stop_consumers()
+        except BaseException as error:failure=error
+        if failure is None:
+            try:return reconcile_forward(tx,evidence)
+            except BaseException as error:failure=error
+        try:
+            common.notify('hermes-unsafe-rollback-'+tx['candidate_sha'],'Hermes: rollback automático bloqueado por mudança no esquema de dados. Preservei o estado atual e tentei parar todos os consumidores para evitar corrupção. Preciso de intervenção; nenhum token/banco antigo foi restaurado.')
+        except BaseException as error:
+            if failure is None:failure=error
+        raise ValueError('Hermes rollback requires compatible current schemas') from failure
+    stop_consumers()
     backup=Path(tx['backup'])
     for name in ['hermes-gateway.service','hermes-dashboard.service']:
         path=UNITS/name
@@ -258,12 +431,7 @@ def apply(request,run_id):
             shutil.copyfile(path,target);target.chmod(0o600)
         validate_local(request)
         # Upstream install stages publish the launcher/products. No file-copy app deploy.
-        branch=command(['git','-C',str(root),'branch','--show-current'])
-        if not branch:raise ValueError('candidate needs a named local branch')
-        for stage in ['products','complete']:
-            command(['bash',str(root/'scripts/install.sh'),'--dir',str(root),'--stage',stage,
-                     '--non-interactive','--branch',branch,'--commit',request['candidate_sha']],root,timeout=900,log=destination/'installer.log')
-        command([str(root/'.hermes/bin/hermes'),'gateway','install','--force','--no-start-now','--start-on-login'],root,timeout=120,log=destination/'gateway-install.log')
+        install_candidate(request,root,destination)
         if any(common.digest(Path(p))!=sha for p,sha in config_hashes.items()):
             raise ValueError('material config migration requires explicit decision')
         command(['systemctl','--user','daemon-reload']);resume(units);healthy(units,request['candidate_sha'])
