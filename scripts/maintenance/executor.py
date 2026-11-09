@@ -371,12 +371,14 @@ def poll():
     BASE.mkdir(mode=0o700,parents=True,exist_ok=True)
     with (BASE/'executor.lock').open('w') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        import hermes_executor
+        if hermes_executor.recovery_barrier() is False:
+            return
         # Auth journals fence restarts in every other lane, including recovery.
         import indexa_auth_executor
         if not indexa_auth_executor.poll_safely():
             return
         recover()
-        import hermes_executor
         if hermes_executor.poll() is False:
             return  # An unresolved Hermes transaction fences other restart lanes.
         # Same external lock; client-only publication never stops the bridges.
@@ -407,6 +409,6 @@ if __name__=='__main__':
         print('MCP deployment blocked:',type(error).__name__,str(error) if isinstance(error,ValueError) else '(private operational error)')
         if BASE.exists():
             try: notify('error-'+hashlib.sha256((type(error).__name__+str(error)).encode()).hexdigest()[:16],
-                        'A rotina de atualização do MCP encontrou um bloqueio técnico. Mantive ou recuperei a versão anterior; detalhes privados em hermes-maintenance/mcp-deploy. Nenhum dado ou credencial foi restaurado automaticamente.')
+                        'A rotina de atualização do MCP encontrou um bloqueio técnico. Confira a versão e a saúde atuais; detalhes privados em hermes-maintenance/mcp-deploy. Nenhum dado ou credencial foi restaurado automaticamente.')
             except Exception: pass
         raise SystemExit(1)

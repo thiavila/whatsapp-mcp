@@ -60,6 +60,13 @@ def stage_control(base, source, sha):
     return code
 
 
+def activate_timers(deploy_active):
+    subprocess.run(['systemctl','--user','daemon-reload'],check=True)
+    subprocess.run(['systemctl','--user','enable',*(['--now'] if deploy_active else []),
+                    'mcp-maintenance-deploy.timer'],check=True)
+    subprocess.run(['systemctl','--user','enable','--now','hermes-health-watch.timer'],check=True)
+
+
 def main(expected_sha):
     if os.getuid()!=1000 or Path.home()!=Path('/home/thiago'):
         raise SystemExit('VM user thiago required')
@@ -77,6 +84,8 @@ def main(expected_sha):
     # Refuse to replace units while any old poll is running; never kill it.
     lock=(BASE/'executor.lock').open('a')
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    deploy_active=subprocess.run(['systemctl','--user','is-active','--quiet',
+                                  'mcp-maintenance-deploy.timer'],check=False).returncode==0
     code=stage_control(BASE,ROOT/'scripts/maintenance',sha)
     units=Path.home()/'.config/systemd/user';units.mkdir(parents=True,exist_ok=True)
     service=f'''[Unit]
@@ -128,9 +137,8 @@ OnUnitActiveSec=2min
 [Install]
 WantedBy=timers.target
 ''')
-    subprocess.run(['systemctl','--user','daemon-reload'],check=True)
-    subprocess.run(['systemctl','--user','enable','--now','mcp-maintenance-deploy.timer'],check=True)
-    subprocess.run(['systemctl','--user','enable','--now','hermes-health-watch.timer'],check=True)
+    # Preserve an operator's paused deployment timer; watchdog still starts.
+    activate_timers(deploy_active)
     print('MCP external executor installed; application deployment waits for an admissible release.')
 
 

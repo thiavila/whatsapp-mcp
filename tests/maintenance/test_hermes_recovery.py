@@ -85,6 +85,67 @@ class RecoveryTests(unittest.TestCase):
             with closing(sqlite3.connect(db)) as connection:
                 self.assertEqual(connection.execute('SELECT count(*) FROM messages').fetchone()[0],2)
 
+    def test_failed_compatible_rollback_never_repeats_stops(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);db=base/'state.db';database(db);tx=self.transaction(base,db)
+            backup=base/'backup';backup.mkdir();(backup/'hermes-shim').write_text('previous')
+            with patch.object(h,'BASE',base),patch.object(h,'SHIM',base/'shim'),patch.object(h,'live_schemas',return_value=tx['schemas']),patch.object(h,'installation',return_value={}),patch.object(h,'ctl') as ctl,patch.object(h,'command'),patch.object(h,'resume'),patch.object(h,'healthy',side_effect=ValueError('Telegram timeout')),patch.object(h.common,'notify'):
+                self.assertFalse(h.recover());stops=ctl.call_count
+                self.assertGreater(stops,0)
+                self.assertFalse(h.recover());self.assertEqual(ctl.call_count,stops)
+                self.assertEqual(json.loads((base/'intervention.json').read_text())['reason'],'rollback-unhealthy')
+
+    def test_crash_after_rollback_armed_does_not_repeat_stop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);db=base/'state.db';database(db);tx=self.transaction(base,db)
+            tx['rollback_attempted']=True;e.atomic(base/'pending.json',tx)
+            with patch.object(h,'BASE',base),patch.object(h,'ctl') as ctl,patch.object(h.common,'notify'):
+                self.assertFalse(h.recover());ctl.assert_not_called()
+
+    def test_healthy_receipt_bound_candidate_finishes_without_rollback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);db=base/'state.db';database(db);tx=self.transaction(base,db)
+            with patch.object(h,'BASE',base),patch.object(h,'live_schemas',return_value=tx['schemas']),patch.object(h,'candidate_healthy',return_value=True),patch.object(h,'ctl') as ctl:
+                self.assertTrue(h.recover());ctl.assert_not_called()
+            self.assertFalse((base/'pending.json').exists())
+            self.assertEqual(json.loads((base/'last-success.json').read_text())['candidate_sha'],tx['candidate_sha'])
+
+    def test_changed_schema_after_stop_resumes_only_bound_unchanged_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);db=base/'state.db';database(db);tx=self.transaction(base,db)
+            tx.update(installed={'fixed launcher':'digest'},request={'candidate_sha':'a'*40})
+            e.atomic(base/'pending.json',tx)
+            with patch.object(h,'BASE',base),patch.object(h,'live_schemas',side_effect=[tx['schemas'],{}]),patch.object(h,'candidate_healthy',return_value=False),patch.object(h,'installation',return_value=tx['installed']),patch.object(h,'validate_local') as validate,patch.object(h,'ctl'),patch.object(h,'resume') as resume,patch.object(h,'healthy') as healthy,patch.object(h.shutil,'copyfile') as copy,patch.object(h.common,'notify'):
+                self.assertFalse(h.recover());copy.assert_not_called()
+                validate.assert_called_once_with(tx['request'])
+                resume.assert_called_once_with(tx['units']);healthy.assert_called_once_with(tx['units'],tx['candidate_sha'])
+
+    def test_barrier_precedes_auth_and_bridge_recovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);db=base/'state.db';database(db);self.transaction(base,db)
+            import indexa_auth_executor as auth
+            with patch.object(e,'BASE',base),patch.object(h,'BASE',base),patch.object(h,'live_schemas',return_value={}),patch.object(h.common,'notify'),patch.object(auth,'poll_safely') as auth_poll,patch.object(e,'recover') as bridge_recover:
+                e.poll();auth_poll.assert_not_called();bridge_recover.assert_not_called()
+
+    def test_concurrent_journals_require_intervention_before_any_lane(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);hermes=base/'hermes';hermes.mkdir();mcp=base/'mcp';mcp.mkdir()
+            db=hermes/'state.db';database(db);self.transaction(hermes,db)
+            e.atomic(mcp/'indexa-auth-pending.json',{'phase':'secure-hold'})
+            with patch.object(h,'BASE',hermes),patch.object(e,'BASE',mcp),patch.object(h,'recover') as recover,patch.object(e,'notify'):
+                self.assertFalse(h.recovery_barrier());recover.assert_not_called()
+
+    def test_installer_preserves_paused_timer_and_starts_independent_monitor(self):
+        import install_executor as installer
+        with patch.object(installer.subprocess,'run') as run:
+            installer.activate_timers(False)
+            commands=[c.args[0] for c in run.call_args_list]
+            self.assertIn(['systemctl','--user','enable','mcp-maintenance-deploy.timer'],commands)
+            self.assertIn(['systemctl','--user','enable','--now','hermes-health-watch.timer'],commands)
+        with patch.object(installer.subprocess,'run') as run:
+            installer.activate_timers(True)
+            self.assertIn(['systemctl','--user','enable','--now','mcp-maintenance-deploy.timer'],[c.args[0] for c in run.call_args_list])
+
     def test_orphan_intervention_also_fences_all_deploy_lanes(self):
         with tempfile.TemporaryDirectory() as tmp:
             base=Path(tmp);e.atomic(base/'intervention.json',{'reason':'operator review'})
@@ -135,6 +196,23 @@ class RecoveryTests(unittest.TestCase):
 
 
 class WatchdogTests(unittest.TestCase):
+    def test_corrupt_incident_is_rebuilt_and_failed_delivery_is_visible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);path=base/'hermes-health-incident.json';path.write_text('{bad json')
+            with patch.object(e,'BASE',base),patch.object(w,'maintenance_active',return_value=False),patch.object(w,'problem',return_value='gateway-inactive'),patch.object(e,'notify',side_effect=OSError('offline')):
+                w.check(100)
+                with self.assertRaises(OSError):w.check(401)
+                self.assertTrue(json.loads(path.read_text())['delivery_failed'])
+
+    def test_maintenance_suppression_is_bounded_and_disabled_by_intervention(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);hermes=base/'hermes-deploy';hermes.mkdir()
+            e.atomic(hermes/'pending.json',dict(phase='installing',started_at=10,maintenance_deadline=100))
+            with patch.object(e,'BASE',base/'mcp-deploy'):
+                self.assertTrue(w.maintenance_active(50));self.assertFalse(w.maintenance_active(101))
+                e.atomic(hermes/'intervention.json',{})
+                self.assertFalse(w.maintenance_active(50))
+
     def test_independent_monitor_alerts_after_grace_without_service_mutations(self):
         with tempfile.TemporaryDirectory() as tmp:
             base=Path(tmp)

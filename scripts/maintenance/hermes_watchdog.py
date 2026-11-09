@@ -10,6 +10,17 @@ import time
 import executor as common
 
 
+def maintenance_active(now):
+    base=common.BASE.parent/'hermes-deploy'
+    try:
+        if (base/'intervention.json').exists():return False
+        tx=json.loads((base/'pending.json').read_text())
+        start=tx['started_at'];deadline=tx['maintenance_deadline']
+        return (tx.get('phase') in ['stopping','installing','starting']
+                and 0<deadline-start<=2400 and start<=now<deadline)
+    except (OSError,ValueError,KeyError,TypeError):return False
+
+
 def problem(now):
     try:
         properties=common.run(['systemctl','--user','show','hermes-gateway.service',
@@ -37,16 +48,28 @@ def check(now=None):
     if reason is None:
         path.unlink(missing_ok=True)
         return
-    previous=json.loads(path.read_text()) if path.exists() else {}
+    if maintenance_active(now):return
+    try:
+        previous=json.loads(path.read_text())
+        if (not isinstance(previous,dict) or not isinstance(previous.get('since'),(int,float))
+                or not isinstance(previous.get('id'),str) or not 0<=previous['since']<=now):
+            previous={}
+    except (OSError,ValueError):previous={}
     incident=previous or {'since':now,'id':str(time.time_ns())}
     incident['reason']=reason
     common.atomic(path,incident)
     # Covers normal startup/maintenance; an indefinitely pending deployment
     # cannot suppress this independent alert. Same outage notifies only once.
     if now-incident['since']>=300:
-        common.notify('hermes-health-'+incident['id'],
-            'Hermes está sem saúde confirmada há pelo menos 5 minutos ('+reason+'). '
-            'Confira gateway/Telegram e manutenção na VM. Este monitor não alterou serviços nem dados.')
+        try:
+            common.notify('hermes-health-'+incident['id'],
+                'Hermes está sem saúde confirmada há pelo menos 5 minutos ('+reason+'). '
+                'Confira gateway/Telegram e manutenção na VM. Este monitor não alterou serviços nem dados.')
+        except (OSError,ValueError,common.subprocess.SubprocessError):
+            incident['delivery_failed']=True
+            common.atomic(path,incident)
+            print('Hermes health alert delivery failed; incident retained for retry',flush=True)
+            raise
 
 
 if __name__=='__main__':
