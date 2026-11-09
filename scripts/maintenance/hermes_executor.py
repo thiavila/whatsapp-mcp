@@ -220,6 +220,8 @@ def candidate_healthy(tx):
     try:
         if not tx.get('installed') or installation()!=tx['installed']:return False
         validate_local(tx['request'])
+        current_configs={str(p):common.digest(p) for p in state_files() if p.name!='auth.json'}
+        if current_configs!=tx['config_hashes']:return False
         current=json_file(HOME/'gateway_state.json')
         pid=int(command(['systemctl','--user','show','hermes-gateway.service','-p','MainPID','--value']))
         age=time.time()-dt.datetime.fromisoformat(current['updated_at']).timestamp()
@@ -345,7 +347,7 @@ def apply(request,run_id):
     units={u:active(u) for u in CONSUMERS}
     tx={'candidate_sha':request['candidate_sha'],'previous_sha':require_sha(state['code_sha']),
         'backup':str(backup),'units':units,'schemas':schemas,'run_id':run_id,
-        'request':request,'phase':'stopping','started_at':time.time(),
+        'request':request,'config_hashes':config_hashes,'phase':'stopping','started_at':time.time(),
         'maintenance_deadline':time.time()+2220}
     common.atomic(BASE/'pending.json',tx)
     try:

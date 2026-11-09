@@ -110,6 +110,11 @@ class RecoveryTests(unittest.TestCase):
             self.assertFalse((base/'pending.json').exists())
             self.assertEqual(json.loads((base/'last-success.json').read_text())['candidate_sha'],tx['candidate_sha'])
 
+    def test_candidate_completion_cannot_bypass_material_config_migration_gate(self):
+        tx=dict(installed={'launcher':'hash'},request={},config_hashes={'config.yaml':'before'})
+        with patch.object(h,'installation',return_value=tx['installed']),patch.object(h,'validate_local'),patch.object(h,'state_files',return_value=[]):
+            self.assertFalse(h.candidate_healthy(tx))
+
     def test_changed_schema_after_stop_resumes_only_bound_unchanged_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
             base=Path(tmp);db=base/'state.db';database(db);tx=self.transaction(base,db)
