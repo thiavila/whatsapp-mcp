@@ -1,19 +1,19 @@
 ---
 gsd_state_version: "1.0"
-status: unknown
-last_updated: "2026-11-09T13:40:39.626Z"
-last_activity: 2026-11-09
-last_activity_desc: Hermes recovery and updater correction in progress.
-state_head: d1b39d7861d4420ac0e849cacde1192d7529347a
+status: ready
+last_updated: "2026-11-11"
+last_activity: 2026-11-11
+last_activity_desc: Hermes CLI/dashboard single-exchange quarantine design passed final adversarial review.
+state_head: HEAD
 ---
 
 # State
 
-Last activity: 2026-11-09 - Hermes recovered; updater code reviewed GO; infrastructure rollout pending authorization.
+Last activity: 2026-11-11 - Post-exchange races and quarantine capacity were corrected; all 63 maintenance tests and final adversarial review passed.
 
 ## Current work
 
-Quick 261109-ecg: code ready, seven bots connected; publish PR and obtain authorization for manual infrastructure bootstrap.
+Quick 261110-cli: implementation and local verification complete; ready for PR/CI and authorized control bootstrap before any production reconciliation.
 
 ## Blockers/Concerns
 
@@ -24,3 +24,4 @@ Production recovery timer is stopped until the schema-aware controller is review
 | # | Description | Date | Commit | Status | Directory |
 |---|-------------|------|--------|--------|-----------|
 | 261109-ecg | Recuperar Telegram e corrigir recuperação de migrações Hermes; instalação de infraestrutura pendente | 2026-11-09 | d1b39d7 | pending-rollout | [261109-ecg-hermes-migration-recovery](./quick/261109-ecg-hermes-migration-recovery/) |
+| 261110-cli | Alinhar atomicamente CLI global e dashboard ao checkout candidato | 2026-11-10 | HEAD | complete | [261110-cli-hermes-atomic-cli-cutover](./quick/261110-cli-hermes-atomic-cli-cutover/) |

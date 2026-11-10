@@ -52,7 +52,8 @@ def prepare(root, tag, upstream):
     receipt={'schema':1,'candidate_sha':sha,'upstream_sha':upstream,'tag':tag,'root':str(root),
              'tests':TESTS,'tests_log_sha256':hashlib.sha256(log.read_bytes()).hexdigest(),
              'result':'passed','runner':'official-per-file-private-home',
-             'installer_sha256':hashlib.sha256((root/'scripts/install.sh').read_bytes()).hexdigest()}
+             'installer_sha256':hashlib.sha256((root/'scripts/install.sh').read_bytes()).hexdigest(),
+             'launcher_sha256':hashlib.sha256((root/'.hermes/bin/hermes').read_bytes()).hexdigest()}
     path=destination/'receipt.json';path.write_text(json.dumps(receipt,sort_keys=True))
     print(json.dumps({'candidate_sha':sha,'receipt_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'receipt':str(path)}))
 

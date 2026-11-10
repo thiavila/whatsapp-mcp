@@ -1,4 +1,4 @@
-from contextlib import closing
+from contextlib import closing, ExitStack
 import json
 from pathlib import Path
 import sqlite3
@@ -73,13 +73,19 @@ class RecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base=Path(tmp);home=base/'home';db=home/'state.db';database(db)
             tx=self.transaction(base,db);backup=base/'backup';backup.mkdir();units=base/'units';units.mkdir()
+            shim=base/'shim';shim.write_text('candidate launcher')
             (backup/'hermes-shim').write_text('previous launcher')
             for name in ['hermes-gateway.service','hermes-dashboard.service']:
-                (backup/name).write_text('previous unit')
+                (backup/name).write_text('previous unit');(units/name).write_text('candidate unit')
+            with patch.object(h,'UNITS',units),patch.object(h,'SHIM',shim):
+                tx['installed']=h.installation()
+            tx['backup_sources']={str(path):h.file_identity(path) for path in
+                [backup/'hermes-shim',backup/'hermes-gateway.service',backup/'hermes-dashboard.service']}
+            e.atomic(base/'pending.json',tx)
             with closing(sqlite3.connect(db)) as connection,connection:
                 connection.execute("INSERT INTO messages VALUES(2,'new row, unchanged schema')")
-            with patch.object(h,'BASE',base),patch.object(h,'HOME',home),patch.object(h,'UNITS',units),patch.object(h,'SHIM',base/'shim'),patch.object(h,'ctl'),patch.object(h,'command'),patch.object(h,'resume'),patch.object(h,'healthy'),patch.object(h.common,'notify'):
-                self.assertTrue(h.recover())
+            with patch.object(h,'BASE',base),patch.object(h,'HOME',home),patch.object(h,'UNITS',units),patch.object(h,'SHIM',shim),patch.object(h,'ctl'),patch.object(h,'command'),patch.object(h,'resume'),patch.object(h,'healthy'),patch.object(h.common,'notify'):
+                self.assertTrue(h.recover(),json.loads((base/'intervention.json').read_text()) if (base/'intervention.json').exists() else None)
             self.assertFalse((base/'pending.json').exists())
             self.assertEqual((base/'shim').read_text(),'previous launcher')
             with closing(sqlite3.connect(db)) as connection:
@@ -89,11 +95,45 @@ class RecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base=Path(tmp);db=base/'state.db';database(db);tx=self.transaction(base,db)
             backup=base/'backup';backup.mkdir();(backup/'hermes-shim').write_text('previous')
-            with patch.object(h,'BASE',base),patch.object(h,'SHIM',base/'shim'),patch.object(h,'live_schemas',return_value=tx['schemas']),patch.object(h,'installation',return_value={}),patch.object(h,'ctl') as ctl,patch.object(h,'command'),patch.object(h,'resume'),patch.object(h,'healthy',side_effect=ValueError('Telegram timeout')),patch.object(h.common,'notify'):
+            shim=base/'shim';tx['installed']={str(shim):{'sha256':'fingerprint'}};e.atomic(base/'pending.json',tx)
+            tx['backup_sources']={str(backup/'hermes-shim'):{'sha256':'source'}};e.atomic(base/'pending.json',tx)
+            with patch.object(h,'BASE',base),patch.object(h,'SHIM',shim),patch.object(h,'live_schemas',return_value=tx['schemas']),patch.object(h,'installation',return_value=tx['installed']),patch.object(h,'publish_file'),patch.object(h,'ctl') as ctl,patch.object(h,'command'),patch.object(h,'resume'),patch.object(h,'healthy',side_effect=ValueError('Telegram timeout')),patch.object(h.common,'notify'):
                 self.assertFalse(h.recover());stops=ctl.call_count
                 self.assertGreater(stops,0)
                 self.assertFalse(h.recover());self.assertEqual(ctl.call_count,stops)
                 self.assertEqual(json.loads((base/'intervention.json').read_text())['reason'],'rollback-unhealthy')
+
+    def test_altered_journaled_backup_source_blocks_rollback_publication(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);home=base/'home';db=home/'state.db';database(db)
+            tx=self.transaction(base,db);backup=base/'backup';backup.mkdir();units=base/'units';units.mkdir()
+            shim=base/'shim';shim.write_text('candidate')
+            (backup/'hermes-shim').write_text('previous')
+            for name in ['hermes-gateway.service','hermes-dashboard.service']:
+                (units/name).write_text('candidate');(backup/name).write_text('previous')
+            with patch.object(h,'UNITS',units),patch.object(h,'SHIM',shim):tx['installed']=h.installation()
+            tx['backup_sources']={str(path):h.file_identity(path) for path in
+                [backup/'hermes-shim',backup/'hermes-gateway.service',backup/'hermes-dashboard.service']}
+            e.atomic(base/'pending.json',tx);(backup/'hermes-shim').write_text('altered backup')
+            with patch.object(h,'BASE',base),patch.object(h,'HOME',home),patch.object(h,'UNITS',units),patch.object(h,'SHIM',shim),patch.object(h,'ctl'),patch.object(h,'command'),patch.object(h,'resume'),patch.object(h,'healthy'),patch.object(h.common,'notify'):
+                self.assertFalse(h.recover())
+            self.assertEqual(shim.read_text(),'candidate')
+            self.assertEqual(json.loads((base/'intervention.json').read_text())['reason'],'rollback-unhealthy')
+
+    def test_rollback_target_mutation_is_fenced_before_stop_or_restore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);home=base/'home';db=home/'state.db';database(db)
+            tx=self.transaction(base,db);backup=base/'backup';backup.mkdir();units=base/'units';units.mkdir()
+            shim=base/'shim';shim.write_text('candidate')
+            (backup/'hermes-shim').write_text('previous')
+            for name in ['hermes-gateway.service','hermes-dashboard.service']:
+                (units/name).write_text('candidate');(backup/name).write_text('previous')
+            with patch.object(h,'UNITS',units),patch.object(h,'SHIM',shim):tx['installed']=h.installation()
+            e.atomic(base/'pending.json',tx);shim.write_text('foreign mutation')
+            with patch.object(h,'BASE',base),patch.object(h,'HOME',home),patch.object(h,'UNITS',units),patch.object(h,'SHIM',shim),patch.object(h,'ctl') as ctl,patch.object(h,'publish_file') as publish,patch.object(h.common,'notify'):
+                self.assertFalse(h.recover());ctl.assert_not_called();publish.assert_not_called()
+            self.assertEqual(shim.read_text(),'foreign mutation')
+            self.assertEqual(json.loads((base/'intervention.json').read_text())['reason'],'rollback-installation-mismatch')
 
     def test_crash_after_rollback_armed_does_not_repeat_stop(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -231,7 +271,32 @@ class RecoveryTests(unittest.TestCase):
                 with closing(sqlite3.connect(db)) as connection,connection:
                     connection.execute('ALTER TABLE messages ADD COLUMN migrated INTEGER')
                     connection.execute("INSERT INTO messages VALUES(2,'arrived after startup',1)")
-            with patch.object(h,'BASE',base),patch.object(h,'HOME',home),patch.object(h,'UNITS',units),patch.object(h,'SHIM',shim),patch.object(h,'validate_local',return_value=base),patch.object(h,'canary'),patch.object(h,'state_files',return_value=[]),patch.object(h.common,'gateway_quiet',return_value=True),patch.object(h.common,'busy_service',return_value=False),patch.object(h.common,'notify'),patch.object(h,'active',return_value=True),patch.object(h,'ctl') as ctl,patch.object(h,'command',return_value='candidate-branch'),patch.object(h,'resume',side_effect=resume),patch.object(h,'healthy'):
+            installed={str(shim):{'sha256':'candidate'},
+                       str(units/'hermes-gateway.service'):{'sha256':'candidate'},
+                       str(units/'hermes-dashboard.service'):{'sha256':'candidate'}}
+            with ExitStack() as stack:
+                for name,value in [('BASE',base),('HOME',home),('UNITS',units),('SHIM',shim)]:
+                    stack.enter_context(patch.object(h,name,value))
+                stack.enter_context(patch.object(h,'validate_local',return_value=base))
+                stack.enter_context(patch.object(h,'canary'))
+                stack.enter_context(patch.object(h,'state_files',return_value=[]))
+                stack.enter_context(patch.object(h.common,'gateway_quiet',return_value=True))
+                stack.enter_context(patch.object(h.common,'busy_service',return_value=False))
+                stack.enter_context(patch.object(h.common,'notify'))
+                stack.enter_context(patch.object(h,'active',return_value=True))
+                ctl=stack.enter_context(patch.object(h,'ctl'))
+                stack.enter_context(patch.object(h,'command',return_value='candidate-branch'))
+                stack.enter_context(patch.object(h,'trusted_existing_launcher',return_value=installed[str(shim)]))
+                stack.enter_context(patch.object(h,'prove_launcher'))
+                stack.enter_context(patch.object(h,'file_identity',return_value={'sha256':'candidate'}))
+                stack.enter_context(patch.object(h,'validate_gateway_unit'))
+                stack.enter_context(patch.object(h,'validate_dashboard_unit'))
+                stack.enter_context(patch.object(h,'installation',return_value=installed))
+                stack.enter_context(patch.object(h,'publish_file'))
+                stack.enter_context(patch.object(h,'align_dashboard_unit'))
+                stack.enter_context(patch.object(h,'aligned_candidate_installation',return_value=installed))
+                stack.enter_context(patch.object(h,'resume',side_effect=resume))
+                stack.enter_context(patch.object(h,'healthy'))
                 request=dict(action='promote',candidate_sha='a'*40,tag='v0.22.6')
                 with self.assertRaisesRegex(ValueError,'live schema differs'):
                     h.apply(request,123)
@@ -240,6 +305,26 @@ class RecoveryTests(unittest.TestCase):
             self.assertTrue((base/'intervention.json').exists())
             with closing(sqlite3.connect(db)) as connection:
                 self.assertEqual(connection.execute('SELECT body FROM messages WHERE id=2').fetchone()[0],'arrived after startup')
+
+    def test_running_candidate_with_old_global_launcher_is_not_already_current(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp);home=base/'home';home.mkdir();units=base/'units';units.mkdir()
+            sha='a'*40;root=base/'candidate';candidate=root/'.hermes/bin/hermes'
+            candidate.parent.mkdir(parents=True);candidate.write_text('candidate');candidate.chmod(0o755)
+            shim=base/'shim';shim.write_text('old launcher');shim.chmod(0o755)
+            (units/'hermes-gateway.service').write_text(f'[Service]\nExecStart={candidate} gateway run\n')
+            (units/'hermes-dashboard.service').write_text(f'[Service]\nExecStart={shim} dashboard\n')
+            (home/'gateway_state.json').write_text(json.dumps({'code_sha':sha,'code_version':'0.22.6'}))
+            request=dict(action='promote',candidate_sha=sha,tag='v0.22.6')
+            with ExitStack() as stack:
+                for name,value in [('BASE',base),('HOME',home),('UNITS',units),('SHIM',shim)]:stack.enter_context(patch.object(h,name,value))
+                stack.enter_context(patch.object(h,'validate_local',return_value=root));stack.enter_context(patch.object(h,'snapshot',return_value={}))
+                stack.enter_context(patch.object(h,'canary'));stack.enter_context(patch.object(h,'databases',return_value=[]))
+                stack.enter_context(patch.object(h.common,'gateway_quiet',return_value=True));stack.enter_context(patch.object(h.common,'busy_service',return_value=False))
+                stack.enter_context(patch.object(h,'prove_launcher'))
+                with self.assertRaisesRegex(ValueError,'partial'):
+                    h.apply(request,123)
+            self.assertFalse((base/'last-success.json').exists())
 
 
 class WatchdogTests(unittest.TestCase):

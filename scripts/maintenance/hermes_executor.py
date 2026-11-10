@@ -1,13 +1,17 @@
 """Receipt-bound Hermes cutover using the upstream installer, never auth restore."""
 from contextlib import closing
+import ctypes
 import datetime as dt
+import errno
 import hashlib
 import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import tempfile
 import time
@@ -23,6 +27,8 @@ WORKFLOW='.github/workflows/hermes-maintenance.yml'
 CONSUMERS=[*common.WATCH_TIMERS,*common.WATCH_SERVICES,'hermes-dashboard.service','hermes-gateway.service']
 UNITS=Path('/home/thiago/.config/systemd/user')
 SHIM=Path('/home/thiago/.local/bin/hermes')
+VERSION_LINE=re.compile(r'^Hermes Agent v(?P<version>\d+\.\d+\.\d+(?:\+[^ ]+)?) .* · local (?P<sha>[0-9a-f]{12,40})$')
+MAX_PUBLICATION_QUARANTINES=8
 
 
 def command(args,root=None,timeout=120,log=None):
@@ -45,6 +51,238 @@ def active(unit):
 
 
 def json_file(path):return json.loads(Path(path).read_text())
+
+
+def file_identity(path):
+    """Return a stable regular-file identity, including its exact bytes."""
+    path=Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('Hermes file must be a regular file')
+    before=path.stat();digest=common.digest(path);after=path.stat()
+    fields=lambda value:(value.st_dev,value.st_ino,value.st_size,value.st_mode,value.st_uid,
+                         value.st_gid,value.st_mtime_ns,value.st_ctime_ns)
+    if fields(before)!=fields(after):raise ValueError('Hermes file changed while fingerprinting')
+    return {'sha256':digest,'device':after.st_dev,'inode':after.st_ino,'size':after.st_size,
+            'mode':after.st_mode,'uid':after.st_uid,'gid':after.st_gid,
+            'mtime_ns':after.st_mtime_ns,'ctime_ns':after.st_ctime_ns}
+
+
+def entry_identity(path):
+    """Fingerprint one stable directory entry without following symlinks."""
+    path=Path(path);before=path.lstat()
+    if stat.S_ISREG(before.st_mode):return file_identity(path)
+    link_target=os.readlink(path) if stat.S_ISLNK(before.st_mode) else None
+    after=path.lstat()
+    fields=lambda value:(value.st_dev,value.st_ino,value.st_size,value.st_mode,value.st_uid,
+                         value.st_gid,value.st_mtime_ns,value.st_ctime_ns)
+    if fields(before)!=fields(after):raise ValueError('Hermes entry changed while fingerprinting')
+    identity:dict[str,object]={'device':after.st_dev,'inode':after.st_ino,'size':after.st_size,
+                              'mode':after.st_mode,'uid':after.st_uid,'gid':after.st_gid,
+                              'mtime_ns':after.st_mtime_ns,'ctime_ns':after.st_ctime_ns}
+    if link_target is not None:identity['link_target']=link_target
+    return identity
+
+
+def exchanged_identity_matches(actual,expected):
+    """Match an exchanged entry; renameat2 changes ctime but no owned data."""
+    keys=set(actual)|set(expected)
+    keys.discard('ctime_ns')
+    return all(actual.get(key)==expected.get(key) for key in keys)
+
+
+def fsync_directory(path):
+    directory=os.open(path,os.O_RDONLY|getattr(os,'O_DIRECTORY',0))
+    try:os.fsync(directory)
+    finally:os.close(directory)
+
+
+def require_publication_slots(target,slots=1):
+    """Refuse before disruption unless bounded quarantine has room."""
+    target=Path(target)
+    count=len(list(target.parent.glob('.'+target.name+'.quarantine.*')))
+    if slots<1 or count+slots>MAX_PUBLICATION_QUARANTINES:
+        raise ValueError('Hermes publication quarantine limit reached')
+
+
+def preflight_publication_capacity(include_promotion):
+    """Reserve rollback slots before services stop or installers run."""
+    require_publication_slots(SHIM,2 if include_promotion else 1)
+    require_publication_slots(UNITS/'hermes-dashboard.service',2 if include_promotion else 1)
+    require_publication_slots(UNITS/'hermes-gateway.service',1)
+
+
+def launcher_identity(path,trusted_digest):
+    path=Path(path)
+    if not os.access(path,os.X_OK):raise ValueError('Hermes launcher must be executable')
+    before=file_identity(path)
+    if before['sha256']!=trusted_digest:
+        raise ValueError('Hermes launcher bytes are not independently trusted')
+    output=command([str(path),'--version'],timeout=60)
+    if file_identity(path)!=before:raise ValueError('Hermes launcher changed during identity check')
+    if not isinstance(output,str):raise ValueError('Hermes launcher identity is unavailable')
+    lines=output.splitlines()
+    match=VERSION_LINE.fullmatch(lines[0] if lines else '')
+    installs=[line.removeprefix('Install directory: ') for line in lines
+              if line.startswith('Install directory: ')]
+    if match is None or len(installs)!=1:
+        raise ValueError('Hermes launcher identity is unavailable')
+    return {'version':match.group('version'),'sha':match.group('sha'),
+            'root':str(Path(installs[0]).resolve())}
+
+
+def prove_launcher(path,expected_sha,trusted_digest,expected_root=None,expected_tag=None):
+    identity=launcher_identity(path,trusted_digest)
+    if len(identity['sha'])<12 or not expected_sha.startswith(identity['sha']):
+        raise ValueError('Hermes launcher does not match expected checkout')
+    if expected_root is not None and identity['root']!=str(Path(expected_root).resolve()):
+        raise ValueError('Hermes launcher install root mismatch')
+    if expected_tag is not None:
+        version=expected_tag.removeprefix('v')
+        if identity['version']!=version and not identity['version'].startswith(version+'+'):
+            raise ValueError('Hermes launcher version mismatch')
+    return identity
+
+
+def rename_exchange(left,right):
+    """Atomically exchange two Linux directory entries, or fail closed."""
+    left=Path(left);right=Path(right)
+    if left.parent!=right.parent:raise ValueError('Hermes exchange must stay in one directory')
+    libc=ctypes.CDLL(None,use_errno=True)
+    function=getattr(libc,'renameat2',None)
+    if function is None:raise OSError(errno.ENOSYS,'renameat2 is required for Hermes publication')
+    function.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_int,ctypes.c_char_p,ctypes.c_uint]
+    function.restype=ctypes.c_int
+    directory=os.open(left.parent,os.O_RDONLY|getattr(os,'O_DIRECTORY',0))
+    try:
+        if function(directory,os.fsencode(left.name),directory,os.fsencode(right.name),2)!=0:
+            error=ctypes.get_errno()
+            raise OSError(error,os.strerror(error))
+    finally:os.close(directory)
+
+
+def atomic_publish_bytes(target,data,mode,expected_identity):
+    """CAS-replace one owned file, retaining both entries on uncertainty."""
+    target=Path(target);target.parent.mkdir(parents=True,exist_ok=True)
+    if expected_identity is None:raise ValueError('Hermes publication requires an expected target identity')
+    if target.is_symlink() or not target.is_file():
+        raise ValueError('refusing to replace non-regular Hermes file')
+    # There is no compare-and-unlink primitive, so old entries are retained as
+    # evidence. Bound that retention before creating another file rather than
+    # allowing retries or recurring upgrades to consume the filesystem.
+    require_publication_slots(target)
+    fd,name=tempfile.mkstemp(prefix='.'+target.name+'.quarantine.',dir=target.parent)
+    temporary=Path(name)
+    with os.fdopen(fd,'wb') as stream:
+        stream.write(data);stream.flush();os.fchmod(stream.fileno(),mode);os.fsync(stream.fileno())
+    candidate=entry_identity(temporary)
+    try:
+        rename_exchange(temporary,target)
+    except BaseException:
+        # A wrapper can fail after the kernel completed the exchange. Never
+        # attempt a second exchange: pathname validation followed by rename is
+        # itself racy and could move a foreign entry. Preserve both names and
+        # best-effort persist whichever state the kernel reached.
+        try:fsync_directory(target.parent)
+        except OSError:pass
+        raise
+    try:
+        displaced=entry_identity(temporary)
+        if not exchanged_identity_matches(displaced,expected_identity):
+            raise ValueError('refusing to replace changed Hermes file')
+        if not exchanged_identity_matches(entry_identity(target),candidate):
+            raise ValueError('Hermes publication verification failed')
+        fsync_directory(target.parent)
+    except BaseException:
+        # Once the first exchange has happened no second pathname exchange can
+        # be a CAS: a writer can replace either side between verification and
+        # renameat2. Leave target and quarantine untouched for receipt-bound
+        # recovery, and best-effort persist the evidence before failing closed.
+        try:fsync_directory(target.parent)
+        except OSError:pass
+        raise
+    # The displaced entry remains at the unique same-directory path as durable
+    # quarantine. Linux has no compare-and-unlink primitive: even a verified
+    # pathname can be replaced immediately before unlink. Retention therefore
+    # avoids deleting either the displaced owner or a later foreign entry.
+
+
+def publish_file(source,target,expected_identity,mode=None,expected_source_identity=None):
+    source=Path(source)
+    before=file_identity(source);data=source.read_bytes()
+    if expected_source_identity is not None and before!=expected_source_identity:
+        raise ValueError('Hermes rollback source changed')
+    if (hashlib.sha256(data).hexdigest()!=before['sha256'] or file_identity(source)!=before):
+        raise ValueError('Hermes publication source changed')
+    atomic_publish_bytes(target,data,mode if mode is not None else source.stat().st_mode&0o777,
+                         expected_identity)
+    if common.digest(target)!=before['sha256']:raise ValueError('Hermes publication verification failed')
+    return before['sha256']
+
+
+def base_unit_exec(path):
+    """Read the one simple no-space ExecStart that may be rewritten."""
+    service=False;commands=[]
+    for raw in Path(path).read_text().splitlines():
+        line=raw.strip()
+        if not line or line.startswith(('#',';')):continue
+        if line.startswith('[') and line.endswith(']'):
+            service=line=='[Service]';continue
+        if service and line.startswith('ExecStart='):
+            value=line.removeprefix('ExecStart=')
+            if not value or value.endswith('\\'):
+                raise ValueError('Hermes unit has unsupported ExecStart semantics')
+            argv=value.split(' ')
+            if (any(not token or not re.fullmatch(r'[A-Za-z0-9_./:@%+=,-]+',token) for token in argv)
+                    or not argv[0].startswith('/')):
+                raise ValueError('Hermes unit has unsupported ExecStart syntax')
+            commands.append(argv)
+    if len(commands)!=1 or not commands[0]:raise ValueError('Hermes unit needs one ExecStart')
+    return commands[0]
+
+
+def effective_unit_exec(unit):
+    """Parse systemd's effective command, including all drop-ins, fail closed."""
+    raw=command(['systemctl','--user','show',unit,'-p','ExecStart','--value'])
+    match=re.fullmatch(r'\{ path=(/[^ ;]+) ; argv\[\]=([^;]+?) ; ignore_errors=(?:yes|no) ; .+ \}',raw)
+    if match is None:raise ValueError('Hermes effective ExecStart has unsupported syntax')
+    path=match.group(1);argv_text=match.group(2)
+    if path is None or argv_text is None:
+        raise ValueError('Hermes effective ExecStart has unsupported metadata')
+    argv=argv_text.split(' ')
+    if (not argv or argv[0]!=path
+            or any(not token or not re.fullmatch(r'[A-Za-z0-9_./:@%+=,-]+',token) for token in argv)):
+        raise ValueError('Hermes effective ExecStart has unsupported argv')
+    return argv
+
+
+def validate_gateway_unit(root):
+    expected=[str(Path(root)/'.hermes/bin/hermes'),'gateway','run']
+    if effective_unit_exec('hermes-gateway.service')!=expected:
+        raise ValueError('Hermes gateway unit does not run the candidate checkout')
+
+
+def validate_dashboard_unit():
+    argv=effective_unit_exec('hermes-dashboard.service')
+    if len(argv)<2 or argv[:2]!=[str(SHIM),'dashboard']:
+        raise ValueError('Hermes dashboard unit does not run the global candidate launcher')
+    return argv
+
+
+def align_dashboard_unit(expected_identity):
+    path=UNITS/'hermes-dashboard.service';raw=path.read_text()
+    lines=raw.splitlines(keepends=True)
+    argv=base_unit_exec(path)
+    if len(argv)<2 or argv[1]!='dashboard':
+        raise ValueError('Hermes dashboard unit is not a dashboard command')
+    service=False;indexes=[]
+    for n,line in enumerate(lines):
+        stripped=line.strip()
+        if stripped.startswith('[') and stripped.endswith(']'):service=stripped=='[Service]'
+        elif service and stripped.startswith('ExecStart='):indexes.append(n)
+    if len(indexes)!=1:raise ValueError('Hermes dashboard unit needs one ExecStart')
+    index=indexes[0];ending='\n' if lines[index].endswith('\n') else ''
+    lines[index]='ExecStart='+' '.join([str(SHIM),*argv[1:]])+ending
+    atomic_publish_bytes(path,''.join(lines).encode(),path.stat().st_mode&0o777,expected_identity)
 
 
 def databases():
@@ -105,7 +343,9 @@ def validate_local(request):
     if command(['git','-C',str(root),'status','--porcelain','--untracked-files=no']):raise ValueError('candidate dirty')
     command(['git','-C',str(root),'merge-base','--is-ancestor',request['upstream_sha'],request['candidate_sha']])
     if common.digest(root/'scripts/install.sh')!=receipt['installer_sha256']:raise ValueError('installer changed')
-    if not (root/'.hermes/bin/hermes').is_file():raise ValueError('official candidate staging is incomplete')
+    launcher=root/'.hermes/bin/hermes'
+    if (not launcher.is_file() or receipt.get('launcher_sha256')!=common.digest(launcher)):
+        raise ValueError('official candidate staging is incomplete')
     return root
 
 
@@ -210,8 +450,55 @@ def intervention(tx,reason):
 
 
 def installation():
-    return {str(p):common.digest(p) for p in
+    return {str(p):file_identity(p) for p in
             [SHIM,UNITS/'hermes-gateway.service',UNITS/'hermes-dashboard.service'] if p.is_file()}
+
+
+def expected_installation_paths():
+    return {str(SHIM),str(UNITS/'hermes-gateway.service'),str(UNITS/'hermes-dashboard.service')}
+
+
+def trusted_existing_launcher(expected_sha):
+    """Bind the installed shim to a tested receipt without executing old code."""
+    receipt_path=BASE/'receipts'/expected_sha/'receipt.json'
+    receipt=json_file(receipt_path)
+    if (receipt.get('schema')!=1 or receipt.get('candidate_sha')!=expected_sha
+            or receipt.get('result')!='passed'
+            or receipt.get('runner')!='official-per-file-private-home'
+            or receipt.get('tests_log_sha256')!=common.digest(receipt_path.parent/'tests.log')):
+        raise ValueError('Hermes running receipt is not trusted')
+    root=candidate_root(receipt.get('root',''))
+    command(['systemctl','--user','daemon-reload'])
+    argv=effective_unit_exec('hermes-gateway.service')
+    if len(argv)!=3 or argv[1:]!=['gateway','run']:
+        raise ValueError('Hermes gateway unit command is not owned')
+    launcher=Path(argv[0])
+    if launcher!=root/'.hermes/bin/hermes':
+        raise ValueError('Hermes gateway launcher path is not canonical')
+    if command(['git','-C',str(root),'rev-parse','HEAD'])!=expected_sha:
+        raise ValueError('Hermes gateway checkout does not match running metadata')
+    if command(['git','-C',str(root),'status','--porcelain']):
+        raise ValueError('Hermes gateway checkout is not clean')
+    if common.digest(root/'scripts/install.sh')!=receipt.get('installer_sha256'):
+        raise ValueError('Hermes running checkout installer changed')
+    gateway_identity=file_identity(launcher);shim_identity=file_identity(SHIM)
+    if gateway_identity['sha256']!=receipt.get('launcher_sha256'):
+        raise ValueError('Hermes running launcher changed after trusted tests')
+    if gateway_identity['sha256']!=shim_identity['sha256']:
+        raise ValueError('Hermes global launcher does not match the trusted running checkout')
+    return shim_identity
+
+
+def aligned_candidate_installation(root):
+    candidate=Path(root)/'.hermes/bin/hermes';candidate_identity=file_identity(candidate)
+    installed=installation()
+    if set(installed)!=expected_installation_paths():
+        raise ValueError('Hermes installation fingerprint is incomplete')
+    if installed[str(SHIM)]['sha256']!=candidate_identity['sha256']:
+        raise ValueError('Hermes installation is partial: global launcher is not the candidate')
+    command(['systemctl','--user','daemon-reload'])
+    validate_gateway_unit(root);validate_dashboard_unit()
+    return installed
 
 
 def config_fingerprints():
@@ -277,6 +564,19 @@ def recover():
         common.atomic(BASE/'last-success.json',tx)
         journal.unlink()
         return True
+    # A rollback may only replace the exact installation journaled at the last
+    # durable phase boundary. Legacy, partial, or externally changed targets
+    # are preserved and fenced before any service is stopped.
+    try:
+        if not tx.get('installed') or installation()!=tx['installed']:
+            return intervention(tx,'rollback-installation-mismatch')
+    except (OSError,ValueError):
+        return intervention(tx,'rollback-installation-unreadable')
+    # A full quarantine is a deterministic preflight gate, never an outage
+    # discovered only after stopping otherwise healthy consumers.
+    try:preflight_publication_capacity(False)
+    except (OSError,ValueError):
+        return intervention(tx,'rollback-quarantine-capacity')
     # Arm durably before the first stop. A crash/failed restart cannot repeat it.
     installed_before=installation()
     tx['rollback_attempted']=True
@@ -305,8 +605,12 @@ def recover():
     try:
         for name in ['hermes-gateway.service','hermes-dashboard.service']:
             path=UNITS/name
-            if (backup/name).exists():shutil.copyfile(backup/name,path)
-        shutil.copyfile(backup/'hermes-shim',SHIM);SHIM.chmod(0o755)
+            source=backup/name
+            if source.exists():publish_file(source,path,tx['installed'][str(path)],
+                expected_source_identity=tx['backup_sources'][str(source)])
+        source=backup/'hermes-shim'
+        publish_file(source,SHIM,tx['installed'][str(SHIM)],mode=0o755,
+                     expected_source_identity=tx['backup_sources'][str(source)])
         command(['systemctl','--user','daemon-reload'])
         resume(tx['units']);healthy(tx['units'],tx['previous_sha'])
     except (OSError,subprocess.SubprocessError,ValueError):
@@ -351,23 +655,51 @@ def apply(request,run_id):
     state=json_file(HOME/'gateway_state.json')
     if not common.gateway_quiet():return False
     if state.get('code_sha')==request['candidate_sha']:
+        candidate=root/'.hermes/bin/hermes';candidate_digest=file_identity(candidate)['sha256']
+        prove_launcher(candidate,request['candidate_sha'],candidate_digest,root,request['tag'])
+        aligned_candidate_installation(root)
         common.atomic(BASE/'last-success.json',{'run_id':run_id,'candidate_sha':request['candidate_sha'],'result':'already_current'})
         return True
+    previous_sha=require_sha(state['code_sha'])
+    # The controller may take over only the launcher belonging to the running
+    # checkout according to independent unit, git, path and digest evidence. It
+    # is deliberately not executed while establishing ownership.
+    trusted_shim=trusted_existing_launcher(previous_sha)
+    installed_before=installation()
+    expected_installation=expected_installation_paths()
+    if set(installed_before)!=expected_installation:
+        raise ValueError('Hermes installation fingerprint is incomplete')
+    if installed_before[str(SHIM)]!=trusted_shim:
+        raise ValueError('Hermes launcher changed after ownership proof')
+    # Reserve promotion plus possible rollback slots before writing a journal,
+    # stopping services, or invoking any installer stage.
+    preflight_publication_capacity(True)
     backup=destination/'backup';backup.mkdir(mode=0o700,exist_ok=True)
+    backup_sources={}
     for name in ['hermes-gateway.service','hermes-dashboard.service']:
-        if (UNITS/name).is_file():shutil.copyfile(UNITS/name,backup/name)
-    shutil.copyfile(SHIM,backup/'hermes-shim')
+        source=UNITS/name;target=backup/name
+        if source.is_file():
+            shutil.copyfile(source,target);backup_sources[str(target)]=file_identity(target)
+            if backup_sources[str(target)]['sha256']!=installed_before[str(source)]['sha256']:
+                raise ValueError('Hermes backup source copy changed')
+    target=backup/'hermes-shim';shutil.copyfile(SHIM,target)
+    backup_sources[str(target)]=file_identity(target)
+    if backup_sources[str(target)]['sha256']!=installed_before[str(SHIM)]['sha256']:
+        raise ValueError('Hermes backup source copy changed')
     units={u:active(u) for u in CONSUMERS}
     if other_transactions():return False
-    tx={'candidate_sha':request['candidate_sha'],'previous_sha':require_sha(state['code_sha']),
+    tx={'candidate_sha':request['candidate_sha'],'previous_sha':previous_sha,
         'backup':str(backup),'units':units,'schemas':schemas,'run_id':run_id,
         'request':request,'config_hashes':config_hashes,'phase':'stopping','started_at':time.time(),
-        'maintenance_deadline':time.time()+2220}
+        'maintenance_deadline':time.time()+2220,'installed':installed_before,
+        'backup_sources':backup_sources}
     common.atomic(BASE/'pending.json',tx)
     try:
         for unit in common.WATCH_TIMERS:ctl('stop',unit)
         if any(common.busy_service(u) for u in common.WATCH_SERVICES):
             resume(units);(BASE/'pending.json').unlink();return False
+        if installation()!=tx['installed']:
+            raise ValueError('Hermes installation changed before gateway stop')
         try:ctl('stop','hermes-gateway.service')
         except subprocess.CalledProcessError:
             if active('hermes-gateway.service'):
@@ -390,7 +722,20 @@ def apply(request,run_id):
             command(['bash',str(root/'scripts/install.sh'),'--dir',str(root),'--stage',stage,
                      '--non-interactive','--branch',branch,'--commit',request['candidate_sha']],root,timeout=900,log=destination/'installer.log')
         command([str(root/'.hermes/bin/hermes'),'gateway','install','--force','--no-start-now','--start-on-login'],root,timeout=120,log=destination/'gateway-install.log')
-        tx['installed']=installation();tx['phase']='starting';common.atomic(BASE/'pending.json',tx)
+        # Re-bind the handoff to the receipt and exact full git SHA after every
+        # installer stage, not merely to the launcher's abbreviated banner.
+        validate_local(request)
+        candidate=root/'.hermes/bin/hermes'
+        candidate_digest=file_identity(candidate)['sha256']
+        prove_launcher(candidate,request['candidate_sha'],candidate_digest,root,request['tag'])
+        publish_file(candidate,SHIM,installed_before[str(SHIM)],mode=0o755)
+        # Prove the bytes through the public path before any consumer can start.
+        prove_launcher(SHIM,request['candidate_sha'],candidate_digest,root,request['tag'])
+        align_dashboard_unit(installed_before[str(UNITS/'hermes-dashboard.service')])
+        command(['systemctl','--user','daemon-reload'])
+        validate_gateway_unit(root);validate_dashboard_unit()
+        tx['installed']=aligned_candidate_installation(root)
+        tx['phase']='starting';common.atomic(BASE/'pending.json',tx)
         if any(common.digest(Path(p))!=sha for p,sha in config_hashes.items()):
             raise ValueError('material config migration requires explicit decision')
         command(['systemctl','--user','daemon-reload']);resume(units);healthy(units,request['candidate_sha'])
