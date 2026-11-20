@@ -43,6 +43,77 @@ To leave the current legacy intervention, an authorized operator must:
 
 This checklist is an operator procedure, not automatic acceptance logic. No acceptance or journal archival has been performed by this patch.
 
+## Dedicated partial-cutover controller
+
+The installed external executor exposes a manual-only
+`--reconcile-hermes-partial-cutover` verb. It is not called by `--poll`. The
+verb requires the literal SHA-256 values of both active markers plus the exact
+candidate SHA, workflow run ID and retained backup path. All five receipt
+arguments are mandatory; a mismatch fails before a journal, service action or
+live database write. Invoke it only from the reviewed immutable control
+generation, outside the gateway cgroup, while holding the executor's normal
+external lock. Obtain the values from the private incident files; do not paste
+example or reconstructed values into production.
+
+The controller is intentionally specific to the recorded 0.22.6 incident and
+the successful published `hermes-installer-request` artifact from workflow run
+`42478485171`; unavailable, expired or mismatching external evidence fails
+closed before journaling. It
+requires the exact retained legacy pending marker (which has no `phase` field)
+and the `schema-incompatible` intervention marker, an enabled-but-paused
+deploy timer, the exact five reviewed profile ledgers, the receipt-bound old
+global launcher/dashboard and candidate gateway, and no active work/watch
+service. It first runs the official candidate initializer on private SQLite
+copies and proves the exact pending schema receipt. Only then does it journal,
+use the native gateway stop guard, migrate live ledgers, and align the launcher
+and dashboard through the reviewed atomic quarantine primitives.
+
+Every phase is durable and resumable only through the explicit reconciliation
+verb. While its journal exists, timer polling and ordinary Hermes recovery are
+fenced. Post-restart checks cover candidate
+SHA/version, every Telegram adapter, dashboard/gateway commands, unit/timer
+states, SQLite integrity/schema, preserved row counts and an empty incident
+table. Original markers are archived by their validated hashes; hash-bound
+tombstones remain at their paths so a foreign pathname race is never unlinked.
+The normal recovery barrier recognizes those tombstones only with the durable,
+private, exact-schema `phase=complete` receipt and matching private archive.
+The deploy timer starts only
+after all verification and archival gates pass.
+
+The incident coordinates are code-pinned to run `42478485171`, candidate
+`8352c5764c6bbef2ad39d99df533da91c74bf953`, upstream tag `v0.22.6`, the
+published retained-receipt/marker/archive digests, workflow/check-suite/control
+identities, retained root, and backup. The launcher is not trusted by an asserted
+digest: the controller privately extracts the official launcher generator and
+`tree_digest` implementation from the pinned candidate Git object, selects the
+Linux Python pin from that object's `pm/lock.json`, verifies the fixed official
+artifact SHA and the complete installed runtime closure, and re-mints the
+launcher with that verified interpreter. Internal symlinks are hashed by their
+official link-text semantics; dangling/external links and special files fail
+closed. Before journaling, the controller extracts the pinned Git tree and
+copies only that verified Python closure into an incident-specific generation
+under the private maintenance base. It mints a new official launcher whose
+repository and interpreter paths both name that generation, removes every
+write bit from its files/directories, seals its dedicated parent `0500`, and
+records a digest of every entry. The final canary, live initializer, global
+launcher, and gateway unit all use this same generation; the gateway unit is
+atomically rewritten before restart. Verification rechecks the sealed modes,
+contained symlinks, full generation digest, launcher identity, and effective
+systemd command before and after execution. Mutable
+`facts.json` is not provenance. The candidate checkout check includes
+untracked files. Marker tombstones and archived originals must remain stable
+private regular files (`0600`) in a stable private archive directory (`0700`).
+
+Threat model: this closes pathname races from the mutable candidate worktree,
+installer leftovers, and ordinary concurrent processes because no executed
+path points back into that tree and neither a generation entry nor its parent
+is writable for the life of the gateway. A hostile process already running as
+the maintenance owner could deliberately `chmod` owner-controlled files; that
+same-UID compromise is outside this unprivileged user-service controller's
+security boundary and requires a privileged immutable filesystem/mount design,
+not an incident repair. The controller fails closed on any observed mode,
+identity, digest, symlink, source-launcher, or unit drift.
+
 Real replay evidence: prior backup's default state/shared/cron/notepad copies passed official initialization and changed cron/executions.db as expected. Repeating the initializer against consistent copies of the current four stores returned no schema changes and no added stores. Replays used private VM temporary directories; copies were removed. Only filenames/statuses, never row contents, were reported. This is bounded evidence for these stores on 0.22.6, not a claim of coverage for every future upstream initializer.
 
 Final review adjustments: post-stop resumption also requires unchanged configuration fingerprints, and completing a healthy candidate resumes its original watch timers first. New Hermes promotion refuses any other pending transaction. The installer preserves both the active and enabled states of the deployment timer, including a deliberately disabled timer; only the health timer is unconditionally enabled/started.

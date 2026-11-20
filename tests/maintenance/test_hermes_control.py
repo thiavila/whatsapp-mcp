@@ -75,6 +75,21 @@ class HermesControlTests(unittest.TestCase):
             self.assertEqual(identity['root'],str(candidate_root.resolve()))
             self.assertEqual(previous.stat().st_mode&0o777,0o755)
 
+    def test_sealed_payload_identity_uses_private_home_and_upstream_stamp(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);launcher=root/'hermes';launcher.write_text('trusted payload');launcher.chmod(0o755)
+            sha='8352c5764c6bbef2ad39d99df533da91c74bf953'
+            output=(f'Hermes Agent v0.22.6+1.g8352c57 (2026.9.24) · upstream {sha[:8]}\n'
+                    f'Install directory: {root}\nInstall method: unknown').encode()
+            with patch.object(hermes_executor.subprocess,'check_output',return_value=output) as execute, \
+                 patch.object(hermes_executor,'command') as ordinary:
+                identity=hermes_executor.prove_launcher(
+                    launcher,sha,hermes_executor.common.digest(launcher),root,'v0.22.6',sealed_payload=True)
+            ordinary.assert_not_called();env=execute.call_args.kwargs['env']
+            self.assertNotEqual(env['HOME'],str(hermes_executor.HOME))
+            self.assertEqual(env['HERMES_HOME'],str(Path(env['HOME'])/'.hermes'))
+            self.assertEqual(identity['sha'],sha[:8])
+
     def test_spoofed_launcher_is_refused_without_execution_or_mutation(self):
         with tempfile.TemporaryDirectory() as temporary:
             launcher=Path(temporary)/'hermes';launcher.write_text('#!/bin/sh\nforeign\n');launcher.chmod(0o755)
@@ -83,6 +98,18 @@ class HermesControlTests(unittest.TestCase):
                 hermes_executor.prove_launcher(launcher,'b'*40,'0'*64)
             command.assert_not_called()
             self.assertEqual(launcher.read_bytes(),before)
+
+    def test_publication_rejects_source_changed_after_candidate_proof(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);source=root/'candidate';target=root/'shim'
+            source.write_text('verified candidate');target.write_text('installed launcher')
+            source_identity=hermes_executor.file_identity(source)
+            target_identity=hermes_executor.file_identity(target)
+            source.write_text('raced candidate')
+            with self.assertRaisesRegex(ValueError,'source identity changed'):
+                hermes_executor.publish_file(source,target,target_identity,
+                                             expected_source_identity=source_identity)
+            self.assertEqual(target.read_text(),'installed launcher')
 
     def test_existing_launcher_ownership_uses_checkout_metadata_without_executing_it(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -255,6 +282,12 @@ class HermesControlTests(unittest.TestCase):
             # metadata, not shlex of the fragment, is authoritative.
             with patch.object(hermes_executor,'command',return_value=self.effective('/foreign/hermes','gateway','run')):
                 with self.assertRaisesRegex(ValueError,'candidate checkout'):hermes_executor.validate_gateway_unit(root)
+            generation=root/'protected-generation';generation_launcher=generation/'.hermes/bin/hermes'
+            generation_launcher.parent.mkdir(parents=True);generation_launcher.write_text('protected')
+            gateway_identity=hermes_executor.file_identity(gateway)
+            with patch.object(hermes_executor,'UNITS',units):
+                hermes_executor.align_gateway_unit(generation,gateway_identity)
+            self.assertIn(f'ExecStart={generation_launcher} gateway run',gateway.read_text())
             dashboard.write_text(f'[Service]\nExecStart={shim} dashboard\nExecStart=/bin/true\n')
             with self.assertRaisesRegex(ValueError,'one ExecStart'):hermes_executor.base_unit_exec(dashboard)
 
