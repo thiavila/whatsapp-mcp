@@ -399,11 +399,40 @@ def poll():
         deploy(run_id,sha)
 
 
+def reconcile_hermes(args):
+    """Run the one explicit receipt-bound partial-cutover repair verb."""
+    # This verb can stop the gateway.  Refuse before creating the base, lock,
+    # journal, or any other file when invoked by a gateway child process.
+    if 'hermes-gateway.service' in Path('/proc/self/cgroup').read_text():
+        raise ValueError('reconciliation must run outside hermes-gateway.service')
+    BASE.mkdir(mode=0o700,parents=True,exist_ok=True)
+    with (BASE/'executor.lock').open('w') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        import hermes_reconcile
+        spec={'pending_sha256':args.pending_sha256,
+              'intervention_sha256':args.intervention_sha256,
+              'candidate_sha':args.candidate_sha,'run_id':args.run_id,
+              'backup':args.backup}
+        return hermes_reconcile.reconcile(spec)
+
+
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--poll',action='store_true');args=parser.parse_args()
+    parser=argparse.ArgumentParser()
+    actions=parser.add_mutually_exclusive_group(required=True)
+    actions.add_argument('--poll',action='store_true')
+    actions.add_argument('--reconcile-hermes-partial-cutover',action='store_true')
+    parser.add_argument('--pending-sha256');parser.add_argument('--intervention-sha256')
+    parser.add_argument('--candidate-sha');parser.add_argument('--run-id',type=int);parser.add_argument('--backup')
+    args=parser.parse_args()
     os.umask(0o077)
-    if not args.poll: parser.error('--poll required')
-    try: poll()
+    if args.poll and any(value is not None for value in
+                         [args.pending_sha256,args.intervention_sha256,args.candidate_sha,args.run_id,args.backup]):
+        parser.error('receipt arguments require --reconcile-hermes-partial-cutover')
+    if args.reconcile_hermes_partial_cutover and any(value is None for value in
+                         [args.pending_sha256,args.intervention_sha256,args.candidate_sha,args.run_id,args.backup]):
+        parser.error('all receipt arguments are required for reconciliation')
+    try:
+        poll() if args.poll else reconcile_hermes(args)
     except BlockingIOError: pass
     except Exception as error:
         print('MCP deployment blocked:',type(error).__name__,str(error) if isinstance(error,ValueError) else '(private operational error)')

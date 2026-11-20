@@ -28,6 +28,7 @@ CONSUMERS=[*common.WATCH_TIMERS,*common.WATCH_SERVICES,'hermes-dashboard.service
 UNITS=Path('/home/thiago/.config/systemd/user')
 SHIM=Path('/home/thiago/.local/bin/hermes')
 VERSION_LINE=re.compile(r'^Hermes Agent v(?P<version>\d+\.\d+\.\d+(?:\+[^ ]+)?) .* · local (?P<sha>[0-9a-f]{12,40})$')
+PAYLOAD_VERSION_LINE=re.compile(r'^Hermes Agent v(?P<version>\d+\.\d+\.\d+(?:\+[^ ]+)?) .* · upstream (?P<sha>[0-9a-f]{8,40})$')
 MAX_PUBLICATION_QUARANTINES=8
 
 
@@ -111,17 +112,24 @@ def preflight_publication_capacity(include_promotion):
     require_publication_slots(UNITS/'hermes-gateway.service',1)
 
 
-def launcher_identity(path,trusted_digest):
+def launcher_identity(path,trusted_digest,sealed_payload=False):
     path=Path(path)
     if not os.access(path,os.X_OK):raise ValueError('Hermes launcher must be executable')
     before=file_identity(path)
     if before['sha256']!=trusted_digest:
         raise ValueError('Hermes launcher bytes are not independently trusted')
-    output=command([str(path),'--version'],timeout=60)
+    if sealed_payload:
+        with tempfile.TemporaryDirectory(prefix='hermes-payload-identity-') as folder:
+            env={'HOME':folder,'HERMES_HOME':str(Path(folder)/'.hermes'),
+                 'PATH':'/usr/local/bin:/usr/bin:/bin','LANG':'C.UTF-8','LC_ALL':'C.UTF-8'}
+            output=subprocess.check_output([str(path),'--version'],env=env,stdin=subprocess.DEVNULL,
+                                           stderr=subprocess.PIPE,timeout=60).decode().strip()
+    else:output=command([str(path),'--version'],timeout=60)
     if file_identity(path)!=before:raise ValueError('Hermes launcher changed during identity check')
     if not isinstance(output,str):raise ValueError('Hermes launcher identity is unavailable')
     lines=output.splitlines()
-    match=VERSION_LINE.fullmatch(lines[0] if lines else '')
+    pattern=PAYLOAD_VERSION_LINE if sealed_payload else VERSION_LINE
+    match=pattern.fullmatch(lines[0] if lines else '')
     installs=[line.removeprefix('Install directory: ') for line in lines
               if line.startswith('Install directory: ')]
     if match is None or len(installs)!=1:
@@ -130,9 +138,10 @@ def launcher_identity(path,trusted_digest):
             'root':str(Path(installs[0]).resolve())}
 
 
-def prove_launcher(path,expected_sha,trusted_digest,expected_root=None,expected_tag=None):
-    identity=launcher_identity(path,trusted_digest)
-    if len(identity['sha'])<12 or not expected_sha.startswith(identity['sha']):
+def prove_launcher(path,expected_sha,trusted_digest,expected_root=None,expected_tag=None,sealed_payload=False):
+    identity=launcher_identity(path,trusted_digest,sealed_payload=sealed_payload)
+    minimum=8 if sealed_payload else 12
+    if len(identity['sha'])<minimum or not expected_sha.startswith(identity['sha']):
         raise ValueError('Hermes launcher does not match expected checkout')
     if expected_root is not None and identity['root']!=str(Path(expected_root).resolve()):
         raise ValueError('Hermes launcher install root mismatch')
@@ -210,7 +219,7 @@ def publish_file(source,target,expected_identity,mode=None,expected_source_ident
     source=Path(source)
     before=file_identity(source);data=source.read_bytes()
     if expected_source_identity is not None and before!=expected_source_identity:
-        raise ValueError('Hermes rollback source changed')
+        raise ValueError('Hermes publication source identity changed')
     if (hashlib.sha256(data).hexdigest()!=before['sha256'] or file_identity(source)!=before):
         raise ValueError('Hermes publication source changed')
     atomic_publish_bytes(target,data,mode if mode is not None else source.stat().st_mode&0o777,
@@ -255,10 +264,29 @@ def effective_unit_exec(unit):
     return argv
 
 
-def validate_gateway_unit(root):
-    expected=[str(Path(root)/'.hermes/bin/hermes'),'gateway','run']
+def validate_gateway_unit(root,launcher=None):
+    launcher=Path(launcher) if launcher is not None else Path(root)/'.hermes/bin/hermes'
+    expected=[str(launcher),'gateway','run']
     if effective_unit_exec('hermes-gateway.service')!=expected:
         raise ValueError('Hermes gateway unit does not run the candidate checkout')
+
+
+def align_gateway_unit(root,expected_identity,launcher=None):
+    """Atomically bind the gateway service to a protected runtime generation."""
+    path=UNITS/'hermes-gateway.service';raw=path.read_text();lines=raw.splitlines(keepends=True)
+    argv=base_unit_exec(path)
+    if len(argv)!=3 or argv[1:]!=['gateway','run']:
+        raise ValueError('Hermes gateway unit is not a gateway run command')
+    service=False;indexes=[]
+    for n,line in enumerate(lines):
+        stripped=line.strip()
+        if stripped.startswith('[') and stripped.endswith(']'):service=stripped=='[Service]'
+        elif service and stripped.startswith('ExecStart='):indexes.append(n)
+    if len(indexes)!=1:raise ValueError('Hermes gateway unit needs one ExecStart')
+    index=indexes[0];ending='\n' if lines[index].endswith('\n') else ''
+    launcher=Path(launcher) if launcher is not None else Path(root)/'.hermes/bin/hermes'
+    lines[index]='ExecStart='+' '.join([str(launcher),'gateway','run'])+ending
+    atomic_publish_bytes(path,''.join(lines).encode(),path.stat().st_mode&0o777,expected_identity)
 
 
 def validate_dashboard_unit():
@@ -510,6 +538,25 @@ def other_transactions():
                ['pending.json','client-pending.json','indexa-auth-pending.json'])
 
 
+def archived_reconciliation_marker(kind):
+    """Recognize tombstones only through the complete private controller receipt."""
+    try:
+        import hermes_reconcile
+        receipt,_=hermes_reconcile.validated_completion_receipt()
+        return hermes_reconcile.marker_is_archived(BASE/(kind+'.json'),receipt)
+    except (OSError,ValueError,KeyError,TypeError,json.JSONDecodeError):return False
+
+
+def reconciled_marker_tombstones():
+    return all(archived_reconciliation_marker(kind) for kind in ['pending','intervention'])
+
+
+def regular_entry(path):
+    """Classify a fence path without following it."""
+    try:return stat.S_ISREG(Path(path).lstat().st_mode)
+    except OSError:return False
+
+
 def candidate_healthy(tx):
     # Only new, receipt-bound journals permit automatic completion/resumption.
     # Legacy journals cannot prove which installation is still on disk.
@@ -532,10 +579,14 @@ def candidate_healthy(tx):
 
 def recovery_barrier():
     """Resolve/fence Hermes BEFORE any other lane can stop the gateway."""
+    if os.path.lexists(BASE/'partial-cutover-reconcile.json'):return False
     pending=BASE/'pending.json'
-    if (BASE/'intervention.json').exists():
-        return recover() if pending.exists() else False
-    if not pending.exists():return True
+    if reconciled_marker_tombstones():return True
+    intervention_path=BASE/'intervention.json'
+    if os.path.lexists(intervention_path) and not archived_reconciliation_marker('intervention'):
+        return recover() if regular_entry(pending) else False
+    if os.path.lexists(pending) and not regular_entry(pending):return False
+    if not os.path.lexists(pending):return True
     # Concurrent journals are an operator decision, never an ordering guess.
     if other_transactions():
         return intervention(json_file(pending),'concurrent-transactions')
@@ -543,11 +594,15 @@ def recovery_barrier():
 
 
 def recover():
+    if os.path.lexists(BASE/'partial-cutover-reconcile.json'):return False
     journal=BASE/'pending.json'
-    if not journal.exists():return True
-    tx=json_file(journal)
+    if reconciled_marker_tombstones():return True
     marker=BASE/'intervention.json'
-    if marker.exists():
+    if os.path.lexists(marker) and not regular_entry(marker):return False
+    if os.path.lexists(journal) and not regular_entry(journal):return False
+    if not os.path.lexists(journal):return True
+    tx=json_file(journal)
+    if os.path.lexists(marker) and not archived_reconciliation_marker('intervention'):
         return intervention(tx,json_file(marker)['reason'])
     if tx.get('rollback_attempted'):
         return intervention(tx,'rollback-incomplete')
@@ -749,7 +804,9 @@ def apply(request,run_id):
 
 def poll():
     BASE.mkdir(mode=0o700,parents=True,exist_ok=True)
-    if (BASE/'intervention.json').exists() and not (BASE/'pending.json').exists():
+    if os.path.lexists(BASE/'partial-cutover-reconcile.json'):return False
+    if (os.path.lexists(BASE/'intervention.json') and not archived_reconciliation_marker('intervention')
+            and not regular_entry(BASE/'pending.json')):
         return False  # Orphan marker still fences all lanes until operator review.
     if recover() is False:return False
     try: workflow=common.api(f'repos/{REPOSITORY}/actions/workflows/hermes-maintenance.yml')

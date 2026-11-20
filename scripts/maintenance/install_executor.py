@@ -36,7 +36,7 @@ def stage_control(base, source, sha):
     releases=base/'control-releases';releases.mkdir(mode=0o700,parents=True,exist_ok=True)
     code=releases/sha
     names=['executor.py','control.py','release_ci.py','hermes_control.py','hermes_executor.py',
-           'prepare_hermes.py','client_executor.py','client_archive.py',
+           'hermes_reconcile.py','prepare_hermes.py','client_executor.py','client_archive.py',
            'indexa_auth_common.py','indexa_auth_runtime.py','indexa_auth_config.py',
            'indexa_auth_probe.py','indexa_auth_executor.py','hermes_watchdog.py']
     if code.exists():
