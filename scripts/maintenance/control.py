@@ -56,5 +56,12 @@ def control_idle(state, live, owner_pid, now):
     # The live response covers delegations omitted by the file aggregate.
     if type(live.get('active_agents')) is not int or not isinstance(live.get('active_work'),list):
         return False
-    current=dict(state,active_agents=live['active_agents'],active_work=live['active_work'])
+    # The control-socket reply is a live observation from the systemd-owned PID.
+    # Do not reject an otherwise idle gateway merely because gateway_state.json
+    # has not changed in the last three minutes; an idle gateway naturally has
+    # nothing to rewrite.  Retain the persisted running-state and PID checks,
+    # but use the observation time for freshness.
+    observed_at=dt.datetime.fromtimestamp(now,dt.timezone.utc).isoformat()
+    current=dict(state,updated_at=observed_at,
+                 active_agents=live['active_agents'],active_work=live['active_work'])
     return gateway_idle(current,now)

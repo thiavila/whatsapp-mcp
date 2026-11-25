@@ -11,7 +11,11 @@ ROOT = Path(__file__).resolve().parents[2]
 def main():
     cache = Path(os.environ.get('MCP_CI_CACHE', Path.home() / '.cache/whatsapp-mcp-ci'))
     cache.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='mcp-code-ci-') as temporary:
+    # Some Hermes maintenance tests intentionally launch short-lived isolated
+    # installer workers.  They can finish writing their synthetic HOME just
+    # after the test process exits; cleanup is best-effort because this entire
+    # tree lives under the VM's auto-pruned scratch directory.
+    with tempfile.TemporaryDirectory(prefix='mcp-code-ci-', ignore_cleanup_errors=True) as temporary:
         work = Path(temporary)
         (work / 'home').mkdir()
         (work / 'store').mkdir()
