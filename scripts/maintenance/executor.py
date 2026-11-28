@@ -39,7 +39,7 @@ CONSUMERS=WATCH_TIMERS+WATCH_SERVICES+['hermes-gateway.service']
 BINARY = REPO / 'whatsapp-bridge/whatsapp-bridge'
 
 
-def run(args, timeout=60, cwd=None, env=None):
+def run(args, timeout:float=60, cwd=None, env=None):
     return subprocess.check_output(args, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                    stderr=subprocess.PIPE, timeout=timeout).decode().strip()
 
@@ -79,23 +79,47 @@ def active(unit):
 
 
 
-def gateway_quiet():
+def gateway_runtime_root(exec_start):
+    match=re.fullmatch(r'\{ path=(/home/thiago/worktrees/hermes-[A-Za-z0-9_-]+/\.hermes/bin/hermes) ; argv\[\]=([^;]+?) ; ignore_errors=(?:yes|no) ; [^{}\r\n]+ \}',exec_start)
+    if match is None:return None
+    launcher=match.group(1)
+    return Path(launcher).parents[2] if match.group(2).split(' ')==[launcher,'gateway','run'] else None
+
+
+def gateway_quiet_detail(timeout:float=10):
+    deadline=time.monotonic()+timeout
+    def remaining(cap):
+        left=deadline-time.monotonic()
+        if left<=0:raise subprocess.TimeoutExpired('gateway idle probe',timeout)
+        return min(cap,left)
     try:
         state=json.loads((HERMES/'gateway_state.json').read_text())
-        pid=int(run(['systemctl','--user','show','hermes-gateway.service','-p','MainPID','--value']))
-        shim=Path(LAUNCHER).read_text()
-        match=re.search(r'exec (/home/thiago/worktrees/hermes-[A-Za-z0-9_-]+)/\.hermes/bin/hermes',shim)
-        if not match or pid<=1:return False
+        pid=int(run(['systemctl','--user','show','hermes-gateway.service','-p','MainPID','--value'],timeout=remaining(3)))
+        exec_start=run(['systemctl','--user','show','hermes-gateway.service','-p','ExecStart','--value'],timeout=remaining(3))
+        root=gateway_runtime_root(exec_start)
+        if root is None:return False,'gateway ExecStart is outside the admitted worktrees'
+        if pid<=1:return False,'gateway MainPID is unavailable'
         python=Path(f'/proc/{pid}/exe').resolve()
-        if not str(python).startswith('/home/thiago/.hermes/tools/python-'):return False
-        code=("import sys,json;from pathlib import Path;sys.path.insert(0,"+repr(match.group(1))+");"
+        tools=root/'.hermes/tools'
+        if root.resolve()!=root or tools.is_symlink() or tools.resolve()!=tools or not python.is_relative_to(tools) or not python.name.startswith('python'):
+            return False,'gateway Python is outside the active release tools'
+        code=("import sys,json;from pathlib import Path;sys.path.insert(0,"+repr(str(root))+ ");"
               "from gateway.control_socket import query_gateway_control;"
               "print(json.dumps(query_gateway_control(Path('/home/thiago/.hermes'),'active-work',timeout=7)))")
         env={'HOME':'/home/thiago','HERMES_HOME':str(HERMES),'PATH':'/usr/bin:/bin','LANG':'C.UTF-8'}
-        live=json.loads(run([str(python),'-I','-c',code],timeout=10,env=env))
-        return control_idle(state,live,pid,time.time())
-    except (OSError,ValueError,subprocess.SubprocessError):
-        return False
+        live=json.loads(run([str(python),'-I','-c',code],timeout=remaining(8),env=env))
+        idle=control_idle(state,live,pid,time.time())
+        if idle:return True,'idle'
+        raw_agents=live.get('active_agents') if isinstance(live,dict) else None
+        agents=raw_agents if type(raw_agents) is int else 'invalid'
+        work=len(live.get('active_work',[])) if isinstance(live,dict) and isinstance(live.get('active_work'),list) else 'invalid'
+        return False,f'live gateway is busy or inconsistent (active_agents={agents}, active_work_count={work})'
+    except (OSError,ValueError,subprocess.SubprocessError) as exc:
+        return False,f'live gateway probe failed ({type(exc).__name__})'
+
+
+def gateway_quiet():
+    return gateway_quiet_detail()[0]
 
 
 def notify(key, message):

@@ -882,7 +882,15 @@ def preflight(spec):
         raise ValueError('running candidate or Telegram adapters are not healthy')
     if not hermes.active('hermes-gateway.service') or not hermes.active('hermes-dashboard.service'):
         raise ValueError('candidate gateway and dashboard must be active')
-    if not common.gateway_quiet():raise ValueError('Hermes has active work or stale control state')
+    deadline=time.monotonic()+30
+    reason='idle probe deadline expired'
+    while True:
+        remaining=deadline-time.monotonic()
+        if remaining<=0:
+            raise ValueError('Hermes did not become idle: '+reason)
+        quiet,reason=common.gateway_quiet_detail(timeout=min(8,remaining))
+        if quiet:break
+        time.sleep(min(2,max(0,deadline-time.monotonic())))
     if any(common.busy_service(unit) for unit in common.WATCH_SERVICES):
         raise ValueError('watch service is processing work')
     units={unit:unit_state(unit) for unit in [*hermes.CONSUMERS,DEPLOY_TIMER]}
