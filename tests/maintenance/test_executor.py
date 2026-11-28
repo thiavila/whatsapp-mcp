@@ -94,6 +94,54 @@ class ExecutorTests(unittest.TestCase):
             self.assertEqual(args,[e.LAUNCHER,'gateway','stop'])
             self.assertNotIn('--yes',args)
 
+    def test_gateway_runtime_root_comes_from_live_systemd_unit(self):
+        active='/home/thiago/worktrees/hermes-stable-20261106'
+        value='{ path='+active+'/.hermes/bin/hermes ; argv[]='+active+'/.hermes/bin/hermes gateway run ; ignore_errors=no ; start_time=[n/a] ; }'
+        self.assertEqual(e.gateway_runtime_root(value),Path(active))
+        self.assertIsNone(e.gateway_runtime_root('{ path=/tmp/spoof/hermes ; }'))
+        spoof='{ path=/bin/false ; argv[]=/bin/false --note path='+active+'/.hermes/bin/hermes ; ignore_errors=no ; x=y ; }'
+        self.assertIsNone(e.gateway_runtime_root(spoof))
+        wrong='{ path='+active+'/.hermes/bin/hermes ; argv[]='+active+'/.hermes/bin/hermes dashboard ; ignore_errors=no ; x=y ; }'
+        self.assertIsNone(e.gateway_runtime_root(wrong))
+        appended=value+' ; { path=/bin/false ; argv[]=/bin/false ; ignore_errors=no ; x=y ; }'
+        self.assertIsNone(e.gateway_runtime_root(appended))
+
+    def test_gateway_quiet_accepts_candidate_local_python_not_stale_global_launcher(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary);root=base/'worktrees/hermes-release';tools=root/'.hermes/tools/python-3/bin'
+            tools.mkdir(parents=True);python=tools/'python3';python.write_text('fixture')
+            state=dict(pid=123,updated_at='stale',active_agents=9,active_work=None,gateway_state='running')
+            (base/'gateway_state.json').write_text(json.dumps(state))
+            values=iter(['123','{ path=/home/thiago/worktrees/hermes-release/.hermes/bin/hermes ; }',
+                         json.dumps(dict(pid=123,active_agents=0,active_work=[]))])
+            with patch.object(e,'HERMES',base),patch.object(e,'gateway_runtime_root',return_value=root),\
+                    patch.object(e,'run',side_effect=lambda *a,**k:next(values)),\
+                    patch.object(e,'control_idle',return_value=True) as idle,\
+                    patch.object(Path,'resolve',autospec=True,side_effect=lambda value: python if str(value)=='/proc/123/exe' else value):
+                self.assertEqual(e.gateway_quiet_detail(),(True,'idle'))
+                idle.assert_called_once()
+                self.assertEqual(idle.call_args.args[1],dict(pid=123,active_agents=0,active_work=[]))
+
+    def test_gateway_quiet_rejects_symlinked_candidate_tools(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)/'root';foreign=Path(temporary)/'foreign';foreign.mkdir();root.mkdir()
+            (root/'.hermes').mkdir();(root/'.hermes/tools').symlink_to(foreign,target_is_directory=True)
+            state=dict(pid=123,updated_at='stale',active_agents=0,active_work=None,gateway_state='running')
+            (root/'gateway_state.json').write_text(json.dumps(state))
+            values=iter(['123','valid exec'])
+            with patch.object(e,'HERMES',root),patch.object(e,'gateway_runtime_root',return_value=root),\
+                    patch.object(e,'run',side_effect=lambda *a,**k:next(values)),\
+                    patch.object(Path,'resolve',autospec=True,side_effect=lambda value: foreign/'python3' if str(value)=='/proc/123/exe' else Path(str(value)).absolute()):
+                self.assertEqual(e.gateway_quiet_detail()[1],'gateway Python is outside the active release tools')
+
+    def test_gateway_quiet_diagnostic_sanitizes_malformed_agent_count(self):
+        with patch.object(e,'control_idle',return_value=False),patch.object(e,'gateway_runtime_root',return_value=Path('/home/thiago/worktrees/hermes-release')),\
+                patch.object(e.Path,'read_text',return_value=json.dumps(dict(pid=123,gateway_state='running'))),\
+                patch.object(e.Path,'resolve',side_effect=[Path('/home/thiago/worktrees/hermes-release/.hermes/tools/python-3/bin/python3'),Path('/home/thiago/worktrees/hermes-release'),Path('/home/thiago/worktrees/hermes-release/.hermes/tools')]),\
+                patch.object(e.Path,'is_symlink',return_value=False),\
+                patch.object(e,'run',side_effect=['123','valid exec',json.dumps(dict(pid=123,active_agents={'private':'value'},active_work=[]))]):
+            self.assertIn('active_agents=invalid',e.gateway_quiet_detail()[1])
+
     def test_oneshot_activating_is_busy_and_all_monitors_are_preserved(self):
         with patch.object(e,'run',return_value='activating'):
             self.assertTrue(e.busy_service('deploy-indexa-watch.service'))
